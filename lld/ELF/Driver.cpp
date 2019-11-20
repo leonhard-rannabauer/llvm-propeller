@@ -887,6 +887,7 @@ static void readConfigs(opt::InputArgList &args) {
       args.hasArg(OPT_ignore_function_address_equality);
   config->init = args.getLastArgValue(OPT_init, "_init");
   config->ltoAAPipeline = args.getLastArgValue(OPT_lto_aa_pipeline);
+  config->ltoCodeGenOnly = args.hasArg(OPT_lto_codegen_only);
   config->ltoCSProfileGenerate = args.hasArg(OPT_lto_cs_profile_generate);
   config->ltoCSProfileFile = args.getLastArgValue(OPT_lto_cs_profile_file);
   config->ltoDebugPassManager = args.hasArg(OPT_lto_debug_pass_manager);
@@ -924,6 +925,7 @@ static void readConfigs(opt::InputArgList &args) {
       args.getLastArgValue(OPT_print_symbol_order);
   config->rpath = getRpath(args);
   config->relocatable = args.hasArg(OPT_relocatable);
+  config->savePreCodeGen = args.hasArg(OPT_save_precodegen);
   config->saveTemps = args.hasArg(OPT_save_temps);
   config->searchPaths = args::getStrings(args, OPT_library_path);
   config->sectionStartMap = getSectionStartMap(args);

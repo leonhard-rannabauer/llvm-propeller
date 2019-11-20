@@ -3849,6 +3849,10 @@ class ToolSelector final {
         return nullptr;
     }
 
+    // The compile action cannot be combined if precodegen bc is desired.
+    if (C.getDriver().ShouldSavePreCodeGenBC(C.getArgs(), *CJ))
+      return nullptr;
+
     if (!T->hasIntegratedAssembler())
       return nullptr;
 
@@ -3911,6 +3915,10 @@ class ToolSelector final {
       return nullptr;
 
     if (T->canEmitIR() && ((SaveTemps && !InputIsBitcode) || EmbedBitcode))
+      return nullptr;
+
+    // The compile action cannot be combined if precodegen bc is desired.
+    if (C.getDriver().ShouldSavePreCodeGenBC(C.getArgs(), *CJ))
       return nullptr;
 
     Inputs = CJ->getInputs();
@@ -4398,8 +4406,12 @@ const char *Driver::GetNamedOutputPath(Compilation &C, const JobAction &JA,
         &JA);
   }
 
+  bool SaveForPreCodeGen = C.getArgs().hasArg(options::OPT_save_precodegen) ?
+      (isUsingLTO() || (JA.getType() == types::TY_LLVM_BC)) : false;
+
   // Output to a temporary file?
   if ((!AtTopLevel && !isSaveTempsEnabled() &&
+       !SaveForPreCodeGen &&
        !C.getArgs().hasArg(options::OPT__SLASH_Fo)) ||
       CCGenDiagnostics) {
     StringRef Name = llvm::sys::path::filename(BaseInput);
@@ -4483,6 +4495,26 @@ const char *Driver::GetNamedOutputPath(Compilation &C, const JobAction &JA,
     }
   } else if (JA.getType() == types::TY_PCH && IsCLMode()) {
     NamedOutput = C.getArgs().MakeArgString(GetClPchPath(C, BaseName));
+  } else if (!AtTopLevel && ShouldSavePreCodeGenBC(C.getArgs(), JA)) {
+    std::string::size_type End = BaseName.rfind('.');
+    SmallString<128> PCGFile(BaseName.substr(0, End));
+    // Use suffix ".precodegen." as this matches what --save-temps does with
+    // ThinLTO.
+    PCGFile += ".precodegen.";
+    PCGFile += types::getTypeTempSuffix(types::TY_Object);
+
+    // Save the precodegen files in the same path as the output if -o is
+    // specified.
+    if (C.getArgs().hasArg(options::OPT_o)) {
+      Arg *FinalOutput = C.getArgs().getLastArg(options::OPT_o);
+      SmallString<128> TempPath(FinalOutput->getValue());
+      llvm::sys::path::remove_filename(TempPath);
+      StringRef OutputFileName = llvm::sys::path::filename(PCGFile);
+      llvm::sys::path::append(TempPath, OutputFileName);
+      NamedOutput = C.getArgs().MakeArgString(TempPath.c_str());
+    } else {
+      NamedOutput =  C.getArgs().MakeArgString(PCGFile.c_str());
+    }
   } else {
     const char *Suffix = types::getTypeTempSuffix(JA.getType(), IsCLMode());
     assert(Suffix && "All types used for output should have a suffix.");
@@ -4955,6 +4987,16 @@ bool Driver::GetReleaseVersion(StringRef Str,
   // More digits than requested, bail out...
   return false;
 }
+
+/// ShouldSavePreCodeGenBC - This saves the optimized bit code before
+/// codegen, used with --save-precodegen.
+bool Driver::ShouldSavePreCodeGenBC(const llvm::opt::ArgList &Args,
+                                    const JobAction &JA) const {
+  return Args.hasArg(options::OPT_save_precodegen) &&
+         JA.getType() == types::TY_LLVM_BC &&
+         !isUsingLTO();
+}
+
 
 std::pair<unsigned, unsigned>
 Driver::getIncludeExcludeOptionFlagMasks(bool IsClCompatMode) const {

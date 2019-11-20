@@ -163,6 +163,7 @@ struct Configuration {
   bool hasDynSymTab;
   bool ignoreDataAddressEquality;
   bool ignoreFunctionAddressEquality;
+  bool ltoCodeGenOnly = false;
   bool ltoCSProfileGenerate;
   bool ltoDebugPassManager;
   bool ltoNewPassManager;
@@ -182,6 +183,7 @@ struct Configuration {
   bool printIcfSections;
   bool relocatable;
   bool relrPackDynRelocs;
+  bool savePreCodeGen;
   bool saveTemps;
   bool singleRoRx;
   bool shared;

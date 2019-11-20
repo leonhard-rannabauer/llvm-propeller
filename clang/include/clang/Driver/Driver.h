@@ -549,6 +549,11 @@ public:
   /// Get the specific kind of LTO being performed.
   LTOKind getLTOMode() const { return LTOMode; }
 
+  /// ShouldSavePreCodeGenBC - This saves the optimized bit code before
+  /// codegen, used with --save-precodegen.
+  bool ShouldSavePreCodeGenBC(const llvm::opt::ArgList &Args,
+                              const JobAction &JA) const;
+
 private:
 
   /// Tries to load options from configuration file.

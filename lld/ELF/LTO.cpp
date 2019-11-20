@@ -33,6 +33,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -86,6 +87,7 @@ static lto::Config createConfig() {
     c.RelocModel = Reloc::Static;
 
   c.CodeModel = getCodeModelFromCMModel();
+  c.CodeGenOnly = config->ltoCodeGenOnly;
   c.DisableVerify = config->disableVerify;
   c.DiagHandler = diagnosticHandler;
   c.OptLevel = config->ltoo;
@@ -116,6 +118,21 @@ static lto::Config createConfig() {
       if (std::unique_ptr<raw_fd_ostream> os = openFile(config->outputFile))
         WriteBitcodeToFile(m, *os, false);
       return false;
+    };
+  }
+
+  // --save-precodegen should save the bit code just before code gen.
+  // Use suffix ".precodegen.o" and this matches --save-temps.
+  if (config->savePreCodeGen && !config->saveTemps) {
+    c.PreCodeGenModuleHook = [](size_t Task, const Module &M) {
+      if (M.getModuleIdentifier() == "ld-temp.o") {
+        return true;
+      }
+      std::string FileName = M.getModuleIdentifier().substr(
+            0, M.getModuleIdentifier().rfind('.')) + ".precodegen.o";
+      if (std::unique_ptr<raw_fd_ostream> os = openFile(FileName))
+        WriteBitcodeToFile(M, *os, false);
+      return true;
     };
   }
 

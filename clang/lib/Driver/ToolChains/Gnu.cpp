@@ -623,6 +623,12 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     }
   }
 
+  // With LTO, actual pre-codegen happens at link time.
+  if (Args.hasArg(options::OPT_save_precodegen) &&
+      Args.getLastArgValue(options::OPT_fuse_ld_EQ).equals_lower("lld")) {
+    CmdArgs.push_back("--save-precodegen");
+  }
+
   // Add HIP offloading linker script args if required.
   AddHIPLinkerScript(getToolChain(), C, Output, Inputs, Args, CmdArgs, JA,
                      *this);

@@ -458,6 +458,7 @@ void MachineFunction::setBasicBlockLabels() {
     // 'L' - Return and landing pad.
     bool isEHPad = MBBI->isEHPad();
     bool isRetBlock = MBBI->isReturnBlock() && !TII->isTailCall(MBBI->back());
+    bool isTailCall = TII->isTailCall(MBBI->back());
     char type = 'a';
     if (isEHPad && isRetBlock)
       type = 'L';
@@ -465,6 +466,8 @@ void MachineFunction::setBasicBlockLabels() {
       type = 'l';
     else if (isRetBlock)
       type = 'r';
+    else if (isTailCall)
+      type = 't';
     MBBSymbolPrefix[MBBI->getNumber()] = type;
   }
 }

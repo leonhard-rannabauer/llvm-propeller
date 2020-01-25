@@ -291,7 +291,7 @@ static bool parseBranchOrFallthroughLine(StringRef lineRef,
   if (!*count)
     return false;
   if (!s2.second.empty()) {
-    if (s2.second == "C" || s2.second == "R")
+    if (s2.second == "C" || s2.second == "R" || s2.second == "T")
       *type = s2.second[0];
     else
       return false;
@@ -345,9 +345,9 @@ bool Propfile::processProfile() {
         continue;
       ++branchCnt;
       if (fromN->CFG == toN->CFG)
-        fromN->CFG->mapBranch(fromN, toN, count, tag == 'C', tag == 'R');
+        fromN->CFG->mapBranch(fromN, toN, count, tag == 'C', tag == 'R', tag == 'T');
       else
-        fromN->CFG->mapCallOut(fromN, toN, 0, count, tag == 'C', tag == 'R');
+        fromN->CFG->mapCallOut(fromN, toN, 0, count, tag == 'C', tag == 'R', tag == 'T');
     } else {
       if (fromN && toN && (fromN->CFG != toN->CFG))
         continue;

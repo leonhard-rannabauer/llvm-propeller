@@ -10,7 +10,7 @@ int main(const int argc, const char *argv[]) {
     if (!strcmp(argv[i], "-e") || !strcmp(argv[i], "--exp") || !strcmp(argv[i], "-exp"))
       exp = true;
   string line;
-  regex R("\\b([alLr]+)(\\.BB\\.[a-zA-Z0-9_$-]+)\\b");
+  regex R("\\b([atlLr]+)(\\.BB\\.[a-zA-Z0-9_$-]+)\\b");
   while (getline(cin, line)) {
     smatch result;
     auto begin = line.cbegin(), end = line.cend();

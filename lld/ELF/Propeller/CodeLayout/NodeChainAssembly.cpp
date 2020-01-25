@@ -16,7 +16,7 @@ namespace propeller {
 double getEdgeExtTSPScore(const CFGEdge &edge, bool isEdgeForward,
                           uint64_t srcSinkDistance) {
   // Approximate callsites to be in the middle of the source basic block.
-  if (edge.isCall()) {
+  if (edge.isCall() && !edge.isTailCall()) {
     if (isEdgeForward)
       srcSinkDistance += edge.Src->ShSize / 2;
     else
@@ -31,7 +31,9 @@ double getEdgeExtTSPScore(const CFGEdge &edge, bool isEdgeForward,
   }
 
   if (srcSinkDistance == 0 && (edge.Type == CFGEdge::EdgeType::INTRA_FUNC ||
-                               edge.Type == CFGEdge::EdgeType::INTRA_DYNA))
+                               edge.Type == CFGEdge::EdgeType::INTRA_DYNA ||
+                               edge.Type == CFGEdge::EdgeType::INTRA_RSTC ||
+                               edge.Type == CFGEdge::EdgeType::INTER_FUNC_TAIL_CALL))
     return edge.Weight * propellerConfig.optFallthroughWeight;
 
   if (isEdgeForward && srcSinkDistance < propellerConfig.optForwardJumpDistance)

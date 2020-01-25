@@ -65,15 +65,19 @@ public:
   enum EdgeType : char {
     INTRA_FUNC,
     INTRA_RSC, // Recursive call.
+    INTRA_RSTC, //Recursive tail call.
     INTRA_RSR, // Return from recursive call.
     // Intra edge dynamically created because of indirect jump, etc.
     INTRA_DYNA,
     // Inter function jumps / calls.
     INTER_FUNC_CALL,
+    INTER_FUNC_TAIL_CALL,
     INTER_FUNC_RETURN,
   } Type = INTRA_FUNC;
 
-  bool isCall() const { return Type == INTER_FUNC_CALL || Type == INTRA_RSC; }
+  bool isCall() const { return Type == INTER_FUNC_CALL || Type==INTER_FUNC_TAIL_CALL || Type == INTRA_RSC || Type == INTRA_RSTC; }
+
+  bool isTailCall() const { return Type==INTER_FUNC_TAIL_CALL || Type == INTRA_RSTC; }
 
   bool isReturn() const {
     return Type == INTER_FUNC_RETURN || Type == INTRA_RSR;
@@ -188,9 +192,9 @@ public:
 
   bool markPath(CFGNode *from, CFGNode *to, uint64_t cnt = 1);
   void mapBranch(CFGNode *from, CFGNode *to, uint64_t cnt = 1,
-                 bool isCall = false, bool isReturn = false);
+                 bool isCall = false, bool isReturn = false, bool isTailCall = false);
   void mapCallOut(CFGNode *from, CFGNode *to, uint64_t toAddr, uint64_t cnt = 1,
-                  bool isCall = false, bool isReturn = false);
+                  bool isCall = false, bool isReturn = false, bool isTailCall = false);
 
   CFGNode *getEntryNode() const {
     assert(!Nodes.empty());

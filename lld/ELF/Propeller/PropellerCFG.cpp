@@ -158,18 +158,21 @@ bool ControlFlowGraph::markPath(CFGNode *from, CFGNode *to, uint64_t cnt) {
 // Apply counter (cnt) to the edge from node from -> to. Both nodes are from the
 // same cfg.
 void ControlFlowGraph::mapBranch(CFGNode *from, CFGNode *to, uint64_t cnt,
-                                 bool isCall, bool isReturn) {
+                                 bool isCall, bool isReturn, bool isTailCall) {
   assert(from->CFG == to->CFG);
 
   for (auto &e : from->Outs) {
     bool edgeTypeOk = true;
-    if (!isCall && !isReturn)
+    if (!isCall && !isReturn && !isTailCall)
       edgeTypeOk =
           e->Type == CFGEdge::INTRA_FUNC || e->Type == CFGEdge::INTRA_DYNA;
-    else if (isCall)
+    if (isCall)
       edgeTypeOk = e->Type == CFGEdge::INTRA_RSC;
     if (isReturn)
       edgeTypeOk = e->Type == CFGEdge::INTRA_RSR;
+    if (isTailCall)
+      edgeTypeOk = e->Type == CFGEdge::INTRA_RSTC;
+
     if (edgeTypeOk && e->Sink == to) {
       e->Weight += cnt;
       return;
@@ -181,13 +184,15 @@ void ControlFlowGraph::mapBranch(CFGNode *from, CFGNode *to, uint64_t cnt,
     type = CFGEdge::INTRA_RSC;
   else if (isReturn)
     type = CFGEdge::INTRA_RSR;
+  else if (isTailCall)
+    type = CFGEdge::INTRA_RSTC;
 
   createEdge(from, to, type)->Weight += cnt;
 }
 
 // Apply counter (cnt) for calls/returns/ that cross function boundaries.
 void ControlFlowGraph::mapCallOut(CFGNode *from, CFGNode *to, uint64_t toAddr,
-                                  uint64_t cnt, bool isCall, bool isReturn) {
+                                  uint64_t cnt, bool isCall, bool isReturn, bool isTailCall) {
   assert(from->CFG == this);
   assert(from->CFG != to->CFG);
   CFGEdge::EdgeType edgeType = CFGEdge::INTER_FUNC_RETURN;
@@ -196,6 +201,8 @@ void ControlFlowGraph::mapCallOut(CFGNode *from, CFGNode *to, uint64_t toAddr,
     edgeType = CFGEdge::INTER_FUNC_CALL;
   if (isReturn)
     edgeType = CFGEdge::INTER_FUNC_RETURN;
+  if (isTailCall)
+    edgeType = CFGEdge::INTER_FUNC_TAIL_CALL;
   for (auto &e : from->CallOuts)
     if (e->Sink == to && e->Type == edgeType) {
       e->Weight += cnt;

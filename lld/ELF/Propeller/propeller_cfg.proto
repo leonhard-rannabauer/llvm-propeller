@@ -17,13 +17,16 @@ message Edge {
   enum Type {
     INTRA_FUNC = 0;
     INTRA_RSC = 1; // Recursive call.
-    INTRA_RSR = 2; // Return from recursive call.
+    INTRA_RSTC = 2; // Recursive tail call.
+    INTRA_RSR = 3; // Return from recursive call.
     // Intra edge dynamically created because of indirect jump, etc.
-    INTRA_DYNA = 3;
-    // Inter function jumps / calls.
-    INTER_FUNC_CALL = 4;
+    INTRA_DYNA = 4;
+    // Inter function calls.
+    INTER_FUNC_CALL = 5;
+    // Inter function jumps.
+    INTER_FUNC_TAIL_CALL = 6;
     // Inter function returns.
-    INTER_FUNC_RETURN = 5;
+    INTER_FUNC_RETURN = 7;
   }
 
   // Edge type

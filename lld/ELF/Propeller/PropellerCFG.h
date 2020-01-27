@@ -75,9 +75,9 @@ public:
     INTER_FUNC_RETURN,
   } Type = INTRA_FUNC;
 
-  bool isCall() const { return Type == INTER_FUNC_CALL || Type==INTER_FUNC_TAIL_CALL || Type == INTRA_RSC || Type == INTRA_RSTC; }
+  bool isCall() const { return Type == INTER_FUNC_CALL || Type == INTER_FUNC_TAIL_CALL || Type == INTRA_RSC || Type == INTRA_RSTC; }
 
-  bool isTailCall() const { return Type==INTER_FUNC_TAIL_CALL || Type == INTRA_RSTC; }
+  bool isTailCall() const { return Type == INTER_FUNC_TAIL_CALL || Type == INTRA_RSTC; }
 
   bool isReturn() const {
     return Type == INTER_FUNC_RETURN || Type == INTRA_RSR;

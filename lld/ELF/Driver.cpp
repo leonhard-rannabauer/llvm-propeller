@@ -900,8 +900,7 @@ static void readConfigs(opt::InputArgList &args) {
   config->ltoObjPath = args.getLastArgValue(OPT_lto_obj_path_eq);
   config->ltoPartitions = args::getInteger(args, OPT_lto_partitions, 1);
   config->ltoSampleProfile = args.getLastArgValue(OPT_lto_sample_profile);
-  config->ltoBasicBlockSections =
-      args.getLastArgValue(OPT_lto_basicblock_sections);
+  config->ltoBBSections = args.getLastArgValue(OPT_lto_basicblock_sections);
   config->ltoUniqueBBSectionNames =
       args.hasFlag(OPT_lto_unique_bb_section_names,
                    OPT_no_lto_unique_bb_section_names, false);
@@ -938,9 +937,6 @@ static void readConfigs(opt::InputArgList &args) {
       args.hasFlag(OPT_propeller_keep_named_symbols,
                    OPT_no_propeller_keep_named_symbols, false);
 
-  config->propellerBBOrderFile =
-      args.getLastArgValue(OPT_propeller_bb_order_file);
-
   config->propellerClusterMergeSizeThreshold = args::getInteger(
       args, OPT_propeller_cluster_merge_size_threshold, 1 << 21);
 
@@ -950,50 +946,49 @@ static void readConfigs(opt::InputArgList &args) {
   config->propellerPrintStats = args.hasFlag(
       OPT_propeller_print_stats, OPT_no_propeller_print_stats, false);
 
-  config->propellerDumpCfgs = args.getAllArgValues(OPT_propeller_dump_cfg);
+  config->propellerDumpCfgs = args::getStrings(args, OPT_propeller_dump_cfg);
 
   config->propellerDebugSymbols =
-      args.getAllArgValues(OPT_propeller_debug_symbol);
+      args::getStrings(args, OPT_propeller_debug_symbol);
 
   config->propellerReorderBlocks = config->propellerReorderFuncs =
       config->propellerSplitFuncs = !config->propeller.empty();
 
   config->propellerFallthroughWeight =
-      args::getFloat(args, OPT_propeller_fallthrough_weight, 1.0);
+      args::getInteger(args, OPT_propeller_fallthrough_weight, 10);
   config->propellerForwardJumpWeight =
-      args::getFloat(args, OPT_propeller_forward_jump_weight, 0.1);
+      args::getInteger(args, OPT_propeller_forward_jump_weight, 1);
   config->propellerBackwardJumpWeight =
-      args::getFloat(args, OPT_propeller_backward_jump_weight, 0.1);
+      args::getInteger(args, OPT_propeller_backward_jump_weight, 1);
 
   config->propellerForwardJumpDistance =
       args::getInteger(args, OPT_propeller_forward_jump_distance, 1024);
   config->propellerBackwardJumpDistance =
       args::getInteger(args, OPT_propeller_backward_jump_distance, 640);
   config->propellerChainSplitThreshold =
-      args::getInteger(args, OPT_propeller_chain_split_threshold, 128);
+      args::getInteger(args, OPT_propeller_chain_split_threshold, 1024);
 
   // Parse Propeller flags.
-  auto propellerOpts = args.getAllArgValues(OPT_propeller_opt);
+  auto propellerOpts = args::getStrings(args, OPT_propeller_opt);
   bool splitFuncsExplicit = false;
   for (auto &propellerOpt : propellerOpts) {
-    StringRef S = StringRef(propellerOpt);
-    if (S == "reorder-ip") {
+    if (propellerOpt == "reorder-ip") {
       config->propellerReorderIP = true;
-    } else if (S == "reorder-funcs") {
+    } else if (propellerOpt == "reorder-funcs") {
       config->propellerReorderFuncs = true;
-    } else if (S == "no-reorder-funcs") {
+    } else if (propellerOpt == "no-reorder-funcs") {
       config->propellerReorderFuncs = false;
-    } else if (S == "reorder-blocks") {
+    } else if (propellerOpt == "reorder-blocks") {
       config->propellerReorderBlocks = true;
-    } else if (S == "no-reorder-blocks") {
+    } else if (propellerOpt == "no-reorder-blocks") {
       config->propellerReorderBlocks = false;
-    } else if (S == "split-funcs") {
+    } else if (propellerOpt == "split-funcs") {
       config->propellerSplitFuncs = true;
       splitFuncsExplicit = true;
-    } else if (S == "no-split-funcs") {
+    } else if (propellerOpt == "no-split-funcs") {
       config->propellerSplitFuncs = false;
     } else
-      error("unknown propeller option: " + S);
+      error("unknown propeller option: " + propellerOpt);
   }
 
   if (!config->propeller.empty() && !config->propellerReorderBlocks) {
@@ -1154,11 +1149,6 @@ static void readConfigs(opt::InputArgList &args) {
       config->callGraphProfileSort = false;
     }
   }
-
-  if (auto *arg = args.getLastArg(OPT_propeller_bb_order_file))
-    if (llvm::Optional<MemoryBufferRef> buffer = readFile(arg->getValue()))
-      for (StringRef s : args::getLines(*buffer))
-        config->propellerBBOrder.push_back(s);
 
   assert(config->versionDefinitions.empty());
   config->versionDefinitions.push_back({"local", (uint16_t)VER_NDX_LOCAL, {}});

@@ -70,7 +70,6 @@ namespace llvm {
     None,   // Do not use Basic Block Sections.
     All,    // Use Basic Block Sections for all functions.
     Labels, // Do not use Basic Block Sections but label basic blocks.
-    Func,   // Get list of functions from a file
     List    // Get list of functions & BBs from a file
   };
   }
@@ -236,6 +235,7 @@ namespace llvm {
 
     unsigned UniqueSectionNames : 1;
 
+    /// Use unique names for basic block sections.
     unsigned UniqueBBSectionNames : 1;
 
     /// Emit target-specific trap instruction for 'unreachable' IR instructions.
@@ -271,9 +271,11 @@ namespace llvm {
     unsigned EmitAddrsig : 1;
 
     /// Emit basic blocks into separate sections.
-    BasicBlockSection::SectionMode BasicBlockSections = BasicBlockSection::None;
+    BasicBlockSection::SectionMode BBSections = BasicBlockSection::None;
 
-    StringMap<SmallSet<unsigned, 4>> BasicBlockSectionsList;
+    /// A map from function name to a set of basic block id's that require
+    /// unique basic block sections.
+    StringMap<SmallSet<unsigned, 4>> BBSectionsList;
 
     /// Emit debug info about parameter's entry values.
     unsigned EnableDebugEntryValues : 1;

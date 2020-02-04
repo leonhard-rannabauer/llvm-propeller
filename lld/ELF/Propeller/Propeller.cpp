@@ -119,8 +119,7 @@ void Propfile::reportParseError(const StringRef msg) const {
 bool Propfile::isHotSymbol(
     SymbolEntry *func,
     const std::map<std::string, std::set<std::string>> &hotBBSymbols,
-    StringRef bbIndex,
-    SymbolEntry::BBTagTypeEnum bbtt) {
+    StringRef bbIndex, SymbolEntry::BBTagTypeEnum bbtt) {
   std::string N("");
   for (auto A : func->Aliases) {
     if (N.empty())
@@ -400,7 +399,7 @@ void Propeller::processFile(ObjectView *view) {
     std::map<uint64_t, uint64_t> OrdinalRemapping;
     if (CFGBuilder(view).buildCFGs(OrdinalRemapping)) {
       // Updating global data structure.
-      std::lock_guard<std::mutex> lock(Lock);
+      std::lock_guard<std::mutex> lockGuard(Lock);
       Views.emplace_back(view);
       for (std::pair<const StringRef, std::unique_ptr<ControlFlowGraph>> &P :
            view->CFGs) {
@@ -518,11 +517,6 @@ void Propeller::calculateNodeFreqs() {
           node.FTEdge->Weight = node.Freq;
       }
     });
-
-    /*
-    if (cfg->Hot && cfg->getEntryNode()->Freq == 0)
-      cfg->getEntryNode()->Freq = 1;
-      */
   }
 }
 
@@ -549,25 +543,6 @@ bool Propeller::processFiles(std::vector<ObjectView *> &views) {
     error(std::string("invalid propfile: '") +
           propellerConfig.optPropeller.str() + "'");
     return false;
-  }
-
-  if (!propellerConfig.optBBOrder.empty()) {
-    for (StringRef s : propellerConfig.optBBOrder) {
-      auto r = s.split('.');
-      std::string bbIndex = r.first.str() == "0" ? "" : r.first;
-      std::string funcName = r.second;
-      bool found = false;
-      auto l1 = prop->Propf->SymbolNameMap.find(funcName);
-      if (l1 != prop->Propf->SymbolNameMap.end()) {
-        auto l2 = l1->second.find(bbIndex);
-        if (l2 != l1->second.end()) {
-          BBLayouts[funcName].push_back(l2->second->Ordinal);
-          found = true;
-        }
-      }
-      if (!found)
-        warn("Symbol not found: " + s);
-    }
   }
 
   ProcessFailureCount = 0;

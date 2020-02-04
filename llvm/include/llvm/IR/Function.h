@@ -96,7 +96,9 @@ private:
 
   friend class SymbolTableListTraits<Function>;
 
-  bool BasicBlockSections = false;
+  /// Whether Basic Block Sections is enabled for this function.
+  bool BBSections = false;
+  /// Whether Basic Block Labels is enabled for this function.
   bool BasicBlockLabels = false;
 
   /// hasLazyArguments/CheckLazyArguments - The argument list of a function is
@@ -163,10 +165,10 @@ public:
   unsigned getInstructionCount() const;
 
   /// Returns true if this function has basic block sections enabled.
-  bool getBasicBlockSections() const { return BasicBlockSections; }
+  bool getBBSections() const { return BBSections; }
 
   /// Indicates that basic block sections is enabled for this function.
-  void setBasicBlockSections(bool value) { BasicBlockSections = value; }
+  void setBBSections(bool value) { BBSections = value; }
 
   /// Returns true if this function has basic block labels enabled.
   bool getBasicBlockLabels() const { return BasicBlockLabels; }

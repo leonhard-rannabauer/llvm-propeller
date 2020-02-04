@@ -242,6 +242,7 @@ public:
 
   bool getUniqueSectionNames() const { return Options.UniqueSectionNames; }
 
+  /// Return true if unique basic block section names must be generated.
   bool getUniqueBBSectionNames() const { return Options.UniqueBBSectionNames; }
 
   /// Return true if data objects should be emitted into their own section,
@@ -258,17 +259,20 @@ public:
 
   /// If basic blocks should be emitted into their own section,
   /// corresponding to -fbasicblock-sections.
-  llvm::BasicBlockSection::SectionMode getBasicBlockSections() const {
-    return Options.BasicBlockSections;
+  llvm::BasicBlockSection::SectionMode getBBSections() const {
+    return Options.BBSections;
   }
 
-  bool isFunctionInBasicBlockSectionsList(const StringRef &name) const {
-    return Options.BasicBlockSectionsList.find(name) !=
-           Options.BasicBlockSectionsList.end();
+  /// Return true if a given function's name in the list of functions for which
+  /// basic block sections must be generated.
+  bool isFunctionInBBSectionsList(const StringRef &name) const {
+    return Options.BBSectionsList.find(name) != Options.BBSectionsList.end();
   }
 
-  SmallSet<unsigned, 4> getBasicBlockSectionsSet(const StringRef &name) const {
-    return Options.BasicBlockSectionsList.lookup(name);
+  /// For a given function, return the set of basic block id's that must be
+  /// emitted in a unique section.
+  SmallSet<unsigned, 4> getBBSectionsSet(const StringRef &name) const {
+    return Options.BBSectionsList.lookup(name);
   }
 
   /// Get a \c TargetIRAnalysis appropriate for the target.

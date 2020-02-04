@@ -5,8 +5,8 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-#ifndef LLD_ELF_PROPELLER_NODE_CHAIN_BUILDER_H
-#define LLD_ELF_PROPELLER_NODE_CHAIN_BUILDER_H
+#ifndef LLD_ELF_PROPELLER_CODE_LAYOUT_NODE_CHAIN_BUILDER_H
+#define LLD_ELF_PROPELLER_CODE_LAYOUT_NODE_CHAIN_BUILDER_H
 
 #include "ModifiablePriorityQueue.h"
 #include "NodeChain.h"
@@ -92,7 +92,7 @@ private:
   void mergeChains(std::unique_ptr<NodeChainAssembly> assembly);
 
   // Recompute the ExtTSP score of a chain
-  double computeExtTSPScore(NodeChain *chain) const;
+  uint64_t computeExtTSPScore(NodeChain *chain) const;
 
   // Update the related NodeChainAssembly records for two chains, with the
   // assumption that unsplitChain has been merged into splitChain.

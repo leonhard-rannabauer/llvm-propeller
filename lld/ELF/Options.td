@@ -314,10 +314,6 @@ defm propeller_print_stats: B<"propeller-print-stats",
     "Print propeller statistics.",
     "Do not print propeller statistics (default)">;
 
-defm propeller_bb_order_file: Eq<"propeller-bb-order-file",
-    "Intra-procedural bb layout to use.">,
-  MetaVarName<"<file>">;
-
 defm propeller_cluster_merge_size_threshold: Eq<"propeller-cluster-merge-size-threshold",
     "Maximum size of a cluster which could be merged with other clusters (default: 2M).">;
 
@@ -332,13 +328,13 @@ defm propeller_debug_symbol: Eq<"propeller-debug-symbol",
     "Print information about propeller actions related to the given symbol.">;
 
 defm propeller_fallthrough_weight: Eq<"propeller-fallthrough-weight",
-    "Fallthrough weight parameter to use in ExtTSP algorithm (default: 1.0).">;
+    "Fallthrough weight parameter to use in ExtTSP algorithm (default: 10).">;
 
 defm propeller_forward_jump_weight: Eq<"propeller-forward-jump-weight",
-    "(Near) forward jump weight parameter to use in ExtTSP algorithm (default: 0.1).">;
+    "(Near) forward jump weight parameter to use in ExtTSP algorithm (default: 1).">;
 
 defm propeller_backward_jump_weight: Eq<"propeller-backward-jump-weight",
-    "(Near) backward jump weight parameter to use in ExtTSP algorithm (default: 0.1).">;
+    "(Near) backward jump weight parameter to use in ExtTSP algorithm (default: 1).">;
 
 defm propeller_forward_jump_distance: Eq<"propeller-forward-jump-distance",
     "Maximum distance for a forward jump in ExtTSP algorithm (default: 1024).">;
@@ -347,7 +343,7 @@ defm propeller_backward_jump_distance: Eq<"propeller-backward-jump-distance",
     "Maximum distance for a backward jump in ExtTSP algorithm (default: 640).">;
 
 defm propeller_chain_split_threshold: Eq<"propeller-chain-split-threshold",
-    "Maximum binary size of a chain which could be split in ExtTSP algorithm (default: 128).">;
+    "Maximum binary size of a chain which could be split in ExtTSP algorithm (default: 1024).">;
 
 def pop_state: F<"pop-state">,
   HelpText<"Undo the effect of -push-state">;
@@ -393,9 +389,6 @@ def start_lib: F<"start-lib">,
 def strip_all: F<"strip-all">, HelpText<"Strip all symbols">;
 
 def strip_debug: F<"strip-debug">, HelpText<"Strip debugging information">;
-
-defm symbol_alignment_file:
-  Eq<"symbol-alignment-file", "Overwrite alignment for symbols.">;
 
 defm symbol_ordering_file:
   Eq<"symbol-ordering-file", "Layout sections to place symbols in the order specified by symbol ordering file">;

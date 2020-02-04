@@ -737,7 +737,7 @@ void NodeChainBuilder::mergeAllChains() {
     auto addEdge = [chain](CFGEdge &edge) {
       // Ignore returns and zero-frequency edges as these edges will not be used
       // by the ExtTSP score algorithm.
-      if (!edge.Weight)// || edge.isReturn())
+      if (!edge.Weight || edge.isReturn())
         return;
       auto *sinkNodeChain = edge.Sink->Chain;
       chain->OutEdges[sinkNodeChain].push_back(&edge);

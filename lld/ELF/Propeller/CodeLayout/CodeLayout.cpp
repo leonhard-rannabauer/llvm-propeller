@@ -141,7 +141,7 @@ void CodeLayout::printStats() {
     auto scoreEntry = extTSPScoreMap.try_emplace(n->CFG->Name, 0).first;
     n->forEachOutEdgeRef([&nodeAddressMap, &distances, &histogram,
                           &scoreEntry](CFGEdge &edge) {
-      if (!edge.Weight)// || edge.isReturn())
+      if (!edge.Weight || edge.isReturn())
         return;
       if (nodeAddressMap.find(edge.Src) == nodeAddressMap.end() ||
           nodeAddressMap.find(edge.Sink) == nodeAddressMap.end()) {

@@ -19,40 +19,46 @@ uint64_t getEdgeExtTSPScore(const CFGEdge &edge, bool isEdgeForward,
   // Approximate callsites to be in the middle of the source basic block.
   if (edge.isCall() && !edge.isTailCall()) {
     if (isEdgeForward)
-      srcSinkDistance += edge.Src->ShSize / 2;
+      srcSinkDistance += edge.src->shSize / 2;
     else
-      srcSinkDistance -= edge.Src->ShSize / 2;
+      srcSinkDistance -= edge.src->shSize / 2;
   }
 
   if (edge.isReturn()) {
     if (isEdgeForward)
-      srcSinkDistance += edge.Sink->ShSize / 2;
+      srcSinkDistance += edge.sink->shSize / 2;
     else
-      srcSinkDistance -= edge.Sink->ShSize / 2;
+      srcSinkDistance -= edge.sink->shSize / 2;
   }
 
+<<<<<<< HEAD
 
   if (srcSinkDistance == 0 && (edge.Type == CFGEdge::EdgeType::INTRA_FUNC ||
                                edge.Type == CFGEdge::EdgeType::INTRA_DYNA ||
                                edge.Type == CFGEdge::EdgeType::INTRA_RSTC ||
                                edge.Type == CFGEdge::EdgeType::INTER_FUNC_TAIL_CALL))
     return edge.Weight * propellerConfig.optFallthroughWeight;
+=======
+  if (srcSinkDistance == 0 && (edge.type == CFGEdge::EdgeType::INTRA_FUNC ||
+                               edge.type == CFGEdge::EdgeType::INTRA_DYNA))
+    return edge.weight * propConfig.optFallthroughWeight;
+>>>>>>> plo-dev
 
-  if (isEdgeForward && srcSinkDistance < propellerConfig.optForwardJumpDistance)
-    return edge.Weight * propellerConfig.optForwardJumpWeight *
-           (propellerConfig.optForwardJumpDistance - srcSinkDistance);
+  if (isEdgeForward && srcSinkDistance < propConfig.optForwardJumpDistance)
+    return edge.weight * propConfig.optForwardJumpWeight *
+           (propConfig.optForwardJumpDistance - srcSinkDistance);
 
   if (!isEdgeForward &&
-      srcSinkDistance < propellerConfig.optBackwardJumpDistance)
-    return edge.Weight * propellerConfig.optBackwardJumpWeight *
-           (propellerConfig.optBackwardJumpDistance - srcSinkDistance);
+      srcSinkDistance < propConfig.optBackwardJumpDistance)
+    return edge.weight * propConfig.optBackwardJumpWeight *
+           (propConfig.optBackwardJumpDistance - srcSinkDistance);
   return 0;
 }
 
 bool NodeChainAssembly::findSliceIndex(CFGNode *node, NodeChain *chain,
                                        uint64_t offset, uint8_t &idx) const {
   for (idx = 0; idx < 3; ++idx) {
-    if (chain != Slices[idx].Chain)
+    if (chain != Slices[idx].chain)
       continue;
     // We find if the node's offset lies within the begin and end offset of this
     // slice.
@@ -71,7 +77,7 @@ bool NodeChainAssembly::findSliceIndex(CFGNode *node, NodeChain *chain,
            nodeIt != std::prev(Slices[idx].Begin); nodeIt--) {
         // Stop iterating if the node's size is non-zero as this would change
         // the offset.
-        if ((*nodeIt)->ShSize)
+        if ((*nodeIt)->shSize)
           break;
         // Have we found the node?
         if (*nodeIt == node)
@@ -87,7 +93,7 @@ bool NodeChainAssembly::findSliceIndex(CFGNode *node, NodeChain *chain,
           return true;
         // Stop iterating if the node's size is non-zero as this would change
         // the offset.
-        if ((*nodeIt)->ShSize)
+        if ((*nodeIt)->shSize)
           break;
       }
     }
@@ -96,7 +102,7 @@ bool NodeChainAssembly::findSliceIndex(CFGNode *node, NodeChain *chain,
 }
 
 // This function computes the ExtTSP score for a chain assembly record. This
-// goes the three BB slices in the assembly record and considers all edges
+// goes the three bb slices in the assembly record and considers all edges
 // whose source and sink belongs to the chains in the assembly record.
 uint64_t NodeChainAssembly::computeExtTSPScore() const {
   // Zero-initialize the score.
@@ -105,32 +111,32 @@ uint64_t NodeChainAssembly::computeExtTSPScore() const {
   auto addEdgeScore = [this, &score](CFGEdge &edge, NodeChain *srcChain,
                                      NodeChain *sinkChain) {
     uint8_t srcSliceIdx, sinkSliceIdx;
-    auto srcNodeOffset = edge.Src->ChainOffset;
-    auto sinkNodeOffset = edge.Sink->ChainOffset;
-    if (!findSliceIndex(edge.Src, srcChain, srcNodeOffset, srcSliceIdx))
+    auto srcNodeOffset = edge.src->chainOffset;
+    auto sinkNodeOffset = edge.sink->chainOffset;
+    if (!findSliceIndex(edge.src, srcChain, srcNodeOffset, srcSliceIdx))
       return;
 
-    if (!findSliceIndex(edge.Sink, sinkChain, sinkNodeOffset, sinkSliceIdx))
+    if (!findSliceIndex(edge.sink, sinkChain, sinkNodeOffset, sinkSliceIdx))
       return;
 
     bool edgeForward = (srcSliceIdx < sinkSliceIdx) ||
                        (srcSliceIdx == sinkSliceIdx &&
-                        (srcNodeOffset + edge.Src->ShSize <= sinkNodeOffset));
+                        (srcNodeOffset + edge.src->shSize <= sinkNodeOffset));
 
     uint64_t srcSinkDistance = 0;
 
     if (srcSliceIdx == sinkSliceIdx) {
       srcSinkDistance = edgeForward
-                            ? sinkNodeOffset - srcNodeOffset - edge.Src->ShSize
-                            : srcNodeOffset - sinkNodeOffset + edge.Src->ShSize;
+                            ? sinkNodeOffset - srcNodeOffset - edge.src->shSize
+                            : srcNodeOffset - sinkNodeOffset + edge.src->shSize;
     } else {
       const NodeChainSlice &srcSlice = Slices[srcSliceIdx];
       const NodeChainSlice &sinkSlice = Slices[sinkSliceIdx];
       srcSinkDistance =
           edgeForward
-              ? srcSlice.EndOffset - srcNodeOffset - edge.Src->ShSize +
+              ? srcSlice.EndOffset - srcNodeOffset - edge.src->shSize +
                     sinkNodeOffset - sinkSlice.BeginOffset
-              : srcNodeOffset - srcSlice.BeginOffset + edge.Src->ShSize +
+              : srcNodeOffset - srcSlice.BeginOffset + edge.src->shSize +
                     sinkSlice.EndOffset - sinkNodeOffset;
       // Increment the distance by the size of the middle slice if the src
       // and sink are from the two ends.

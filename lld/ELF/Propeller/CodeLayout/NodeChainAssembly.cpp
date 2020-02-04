@@ -31,18 +31,11 @@ uint64_t getEdgeExtTSPScore(const CFGEdge &edge, bool isEdgeForward,
       srcSinkDistance -= edge.sink->shSize / 2;
   }
 
-<<<<<<< HEAD
-
-  if (srcSinkDistance == 0 && (edge.Type == CFGEdge::EdgeType::INTRA_FUNC ||
-                               edge.Type == CFGEdge::EdgeType::INTRA_DYNA ||
-                               edge.Type == CFGEdge::EdgeType::INTRA_RSTC ||
-                               edge.Type == CFGEdge::EdgeType::INTER_FUNC_TAIL_CALL))
-    return edge.Weight * propellerConfig.optFallthroughWeight;
-=======
   if (srcSinkDistance == 0 && (edge.type == CFGEdge::EdgeType::INTRA_FUNC ||
-                               edge.type == CFGEdge::EdgeType::INTRA_DYNA))
+                               edge.type == CFGEdge::EdgeType::INTRA_DYNA ||
+                               edge.type == CFGEdge::EdgeType::INTRA_RSTC ||
+                               edge.type == CFGEdge::EdgeType::INTER_FUNC_TAIL_CALL))
     return edge.weight * propConfig.optFallthroughWeight;
->>>>>>> plo-dev
 
   if (isEdgeForward && srcSinkDistance < propConfig.optForwardJumpDistance)
     return edge.weight * propConfig.optForwardJumpWeight *

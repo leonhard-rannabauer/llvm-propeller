@@ -165,7 +165,8 @@ void ControlFlowGraph::mapCallOut(CFGNode *from, CFGNode *to, uint64_t toAddr,
                                   uint64_t cnt, bool isCall, bool isReturn, bool isTailCall) {
   assert(from->controlFlowGraph == this);
   assert(from->controlFlowGraph != to->controlFlowGraph);
-  edgeType = CFGEdge::INTER_FUNC_RETURN;
+
+  CFGEdge::EdgeType edgeType = CFGEdge::INTER_FUNC_RETURN;
   if (isTailCall)
     edgeType = CFGEdge::INTER_FUNC_TAIL_CALL;
   if (isCall || (toAddr && to->controlFlowGraph->getEntryNode() == to &&

@@ -56,6 +56,24 @@ MachineBasicBlock::MachineBasicBlock(MachineFunction &MF, const BasicBlock *B)
 MachineBasicBlock::~MachineBasicBlock() {
 }
 
+static char computeMBBSymbolSuffix(const MachineBasicBlock &MBB) {
+  // 'a' - Normal block.
+  // 'r' - Return block.
+  // 'l' - Landing Pad.
+  // 'L' - Return and landing pad.
+  const TargetInstrInfo *TII = MBB.getParent()->getSubtarget().getInstrInfo();
+  bool isEHPad = MBB.isEHPad();
+  bool isRetBlock = MBB.isReturnBlock() && !TII->isTailCall(MBB.back());
+  if (isEHPad && isRetBlock)
+    return 'L';
+  else if (isEHPad)
+    return 'l';
+  else if (isRetBlock)
+    return 'r';
+  else
+    return 'a';
+}
+
 /// Return the MCSymbol for this basic block.
 MCSymbol *MachineBasicBlock::getSymbol() const {
   if (!CachedMCSymbol) {
@@ -73,7 +91,7 @@ MCSymbol *MachineBasicBlock::getSymbol() const {
     if (BasicBlockSymbols) {
       CachedMCSymbol = Ctx.getOrCreateSymbol(
           Twine(MF->getFunctionNumber()) + Twine(Delimiter) +
-          Twine(getNumber()));
+          Twine(getNumber()) + Twine(computeMBBSymbolSuffix(*this)));
     } else {
       CachedMCSymbol = Ctx.getOrCreateSymbol(
           Twine(Prefix) + "BB" + Twine(MF->getFunctionNumber()) +

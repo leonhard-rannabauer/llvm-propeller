@@ -128,23 +128,23 @@ public:
     return cast_or_null<ObjFile<ELFT>>(file);
   }
 
-  unsigned BytesDropped = 0;
+  // If basic block sections are enabled, many code sections could end up with
+  // one or two jump instructions at the end that could be relaxed to a smaller
+  // instruction. The members below help trimming the trailing jump instruction
+  // and shrinking a section.
+  unsigned bytesDropped = 0;
 
-  bool Trimmed = false;
-
-  void drop_back(uint64_t num) { BytesDropped += num; }
+  void drop_back(uint64_t num) { bytesDropped += num; }
 
   void push_back(uint64_t num) {
-    assert(BytesDropped >= num);
-    BytesDropped -= num;
+    assert(bytesDropped >= num);
+    bytesDropped -= num;
   }
 
   void trim() {
-    if (Trimmed)
-      return;
-    if (BytesDropped) {
-      rawData = rawData.drop_back(BytesDropped);
-      Trimmed = true;
+    if (bytesDropped) {
+      rawData = rawData.drop_back(bytesDropped);
+      bytesDropped = 0;
     }
   }
 
@@ -212,16 +212,15 @@ public:
   // This vector contains such "cooked" relocations.
   std::vector<Relocation> relocations;
 
-  llvm::Optional<std::array<uint8_t, 4>> Filler;
+  // Indicates that this section needs to be padded with a NOP filler if set to
+  // true.
+  bool nopFiller = false;
 
-  // Special filler provides variable-length padding instructions.
-  // This has to be ordered by length.
-  llvm::Optional<std::vector<std::vector<uint8_t>>> SpecialFiller;
-
-  // These are artificial jump relocations.
-  std::vector<JumpRelocation> JumpRelocations;
-
-  void addJumpRelocation(JumpRelocation J) { JumpRelocations.push_back(J); }
+  // These are modifiers to jump instructions that are necessary when basic
+  // block sections are enabled.  Basic block sections creates opportunities to
+  // relax jump instructions at basic block boundaries after reordering the
+  // basic blocks.
+  std::vector<JumpInstrMod> jumpInstrMods;
 
   // A function compiled with -fsplit-stack calling a function
   // compiled without -fsplit-stack needs its prologue adjusted. Find
@@ -390,6 +389,10 @@ private:
 
   template <class ELFT> void copyShtGroup(uint8_t *buf);
 };
+
+inline bool isDebugSection(const InputSectionBase &sec) {
+  return sec.name.startswith(".debug") || sec.name.startswith(".zdebug");
+}
 
 // The list of all input sections.
 extern std::vector<InputSectionBase *> inputSections;

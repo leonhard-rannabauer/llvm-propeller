@@ -113,6 +113,20 @@ declare ALL_FILES=(
         lld-reorder      lld/test/ELF/propeller/codelayout/function-with-loop.s
         lld-reorder      lld/test/ELF/propeller/codelayout/optimal-fallthrough.s
         lld-reorder      lld/test/ELF/propeller/codelayout/opt-all-combinations.s
+#lld-base patch
+        lld-base         lld/ELF/Arch/X86_64.cpp
+        lld-base         lld/ELF/Config.h
+        lld-base         lld/ELF/Driver.cpp
+        lld-base         lld/ELF/InputSection.cpp
+        lld-base         lld/ELF/InputSection.h
+        lld-base         lld/ELF/LTO.cpp
+        lld-base         lld/ELF/Options.td
+        lld-base         lld/ELF/OutputSections.cpp
+	lld-base         lld/ELF/Relocations.h
+        lld-base         lld/ELF/Target.h
+        lld-base         lld/ELF/Writer.cpp
+	lld-base         lld/test/ELF/bb-sections-delete-fallthru.s
+	lld-base         lld/test/ELF/bb-sections-and-icf.s
 # LLVM patch begins here.
         exception        llvm/include/llvm/CodeGen/AsmPrinter.h
         cfi              llvm/include/llvm/CodeGen/AsmPrinterHandler.h
@@ -120,9 +134,10 @@ declare ALL_FILES=(
         debuginfo        llvm/include/llvm/CodeGen/DebugHandlerBase.h
         base_2           llvm/include/llvm/CodeGen/MachineBasicBlock.h
         base_2           llvm/include/llvm/CodeGen/MachineFunction.h
+        base_2           llvm/include/llvm/CodeGen/Passes.h
         cfi              llvm/include/llvm/CodeGen/TargetFrameLowering.h
         base_2           llvm/include/llvm/CodeGen/TargetLoweringObjectFileImpl.h
-        base_1           llvm/include/llvm/IR/BasicBlock.h
+	base_2           llvm/include/llvm/InitializePasses.h
         base_1           llvm/include/llvm/IR/Function.h
         debuginfo        llvm/include/llvm/MC/MCAsmInfo.h
         cfi              llvm/include/llvm/MC/MCDwarf.h
@@ -143,14 +158,21 @@ declare ALL_FILES=(
         exception        llvm/lib/CodeGen/AsmPrinter/EHStreamer.h
         exception        llvm/lib/CodeGen/AsmPrinter/WasmException.cpp
         exception        llvm/lib/CodeGen/AsmPrinter/WasmException.h
+	base_2           llvm/lib/CodeGen/BBSectionsPrepare.cpp
         cfi              llvm/lib/CodeGen/CFIInstrInserter.cpp
+	base_2           llvm/lib/CodeGen/CodeGen.cpp
         base_1           llvm/lib/CodeGen/CodeGenPrepare.cpp
+	base_2           llvm/lib/CodeGen/CMakeLists.txt
         base_2           llvm/lib/CodeGen/MachineBasicBlock.cpp
         base_2           llvm/lib/CodeGen/MachineFunction.cpp
         base_2           llvm/lib/CodeGen/TargetLoweringObjectFileImpl.cpp
+	base_2           llvm/lib/CodeGen/TargetPassConfig.cpp
         debuginfo        llvm/lib/MC/ELFObjectWriter.cpp
         cfi              llvm/lib/MC/MCDwarf.cpp
         debuginfo        llvm/lib/MC/MCDwarf.cpp
+	base_1           llvm/include/llvm/ProfileData/BBSectionsProf.h
+	base_1           llvm/lib/ProfileData/CMakeLists.txt
+	base_1           llvm/lib/ProfileData/BBSectionsProf.cpp
         cfi              llvm/lib/Target/AArch64/AArch64FrameLowering.h
         base_2           llvm/lib/Target/TargetLoweringObjectFile.cpp
         base_reloc       llvm/lib/Target/X86/MCTargetDesc/X86ELFObjectWriter.cpp
@@ -161,7 +183,9 @@ declare ALL_FILES=(
         base_2           llvm/test/CodeGen/X86/basicblock-sections-listbb.ll
         base_2           llvm/test/CodeGen/X86/basicblock-sections-labels.ll
 	base_2           llvm/test/CodeGen/X86/basicblock-sections-eh.ll
+	base_2           llvm/test/CodeGen/X86/basicblock-sections-cold.ll
         exception        llvm/test/CodeGen/X86/gcc_except_table_basicblock-sections.ll
+	exception        llvm/test/CodeGen/X86/gcc_except_table_basicblock-sections_exception_groups_with_cold.ll
         cfi              llvm/test/DebugInfo/X86/basicblock-sections-cfi.ll
         cfi              llvm/test/DebugInfo/X86/basicblock-sections-cfiinstr.ll
         debuginfo        llvm/test/DebugInfo/X86/basicblock-sections_1.ll

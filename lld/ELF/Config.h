@@ -125,7 +125,7 @@ struct Configuration {
   llvm::StringRef sysroot;
   llvm::StringRef thinLTOCacheDir;
   llvm::StringRef thinLTOIndexOnlyArg;
-  llvm::StringRef ltoBBSections;
+  llvm::StringRef ltoBasicBlockSections;
   std::pair<llvm::StringRef, llvm::StringRef> thinLTOObjectSuffixReplace;
   std::pair<llvm::StringRef, llvm::StringRef> thinLTOPrefixReplace;
   std::string rpath;
@@ -165,7 +165,6 @@ struct Configuration {
   bool exportDynamic;
   bool fixCortexA53Errata843419;
   bool fixCortexA8;
-  bool forceBTI;
   bool formatBinary = false;
   bool gcSections;
   bool gdbIndex;
@@ -179,17 +178,18 @@ struct Configuration {
   bool ltoDebugPassManager;
   bool ltoNewPassManager;
   bool ltoUniqueBBSectionNames;
+  bool ltoWholeProgramVisibility;
   bool mergeArmExidx;
   bool mipsN32Abi = false;
   bool mmapOutputFile;
   bool nmagic;
+  bool noDynamicLinker = false;
   bool noinhibitExec;
   bool nostdlib;
   bool oFormatBinary;
   bool omagic;
   bool optimizeBBJumps;
   bool optRemarksWithHotness;
-  bool pacPlt;
   bool picThunk;
   bool pie;
   bool printGcSections;
@@ -205,13 +205,13 @@ struct Configuration {
   bool saveTemps;
   bool singleRoRx;
   bool shared;
-  bool shrinkJumpsAggressively;
   bool isStatic = false;
   bool sysvHash = false;
   bool target1Rel;
   bool trace;
   bool thinLTOEmitImportsFiles;
   bool thinLTOIndexOnly;
+  bool timeTraceEnabled;
   bool tocOptimize;
   bool undefinedVersion;
   bool useAndroidRelrTags = false;
@@ -223,6 +223,7 @@ struct Configuration {
   bool writeAddends;
   bool zCombreloc;
   bool zCopyreloc;
+  bool zForceBti;
   bool zForceIbt;
   bool zGlobal;
   bool zHazardplt;
@@ -235,6 +236,7 @@ struct Configuration {
   bool zNodlopen;
   bool zNow;
   bool zOrigin;
+  bool zPacPlt;
   bool zRelro;
   bool zRodynamic;
   bool zShstk;
@@ -263,6 +265,7 @@ struct Configuration {
   unsigned ltoo;
   unsigned optimize;
   unsigned thinLTOJobs;
+  unsigned timeTraceGranularity;
   int32_t splitStackAdjustSize;
 
   // The following config options do not directly correspond to any

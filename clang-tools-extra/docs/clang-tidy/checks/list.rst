@@ -65,6 +65,7 @@ Clang-Tidy Checks
    `bugprone-macro-parentheses <bugprone-macro-parentheses.html>`_, "Yes"
    `bugprone-macro-repeated-side-effects <bugprone-macro-repeated-side-effects.html>`_,
    `bugprone-misplaced-operator-in-strlen-in-alloc <bugprone-misplaced-operator-in-strlen-in-alloc.html>`_, "Yes"
+   `bugprone-misplaced-pointer-arithmetic-in-alloc <bugprone-misplaced-pointer-arithmetic-in-alloc.html>`_, "Yes"
    `bugprone-misplaced-widening-cast <bugprone-misplaced-widening-cast.html>`_,
    `bugprone-move-forwarding-reference <bugprone-move-forwarding-reference.html>`_, "Yes"
    `bugprone-multiple-statement-macro <bugprone-multiple-statement-macro.html>`_,
@@ -105,6 +106,7 @@ Clang-Tidy Checks
    `cert-mem57-cpp <cert-mem57-cpp.html>`_,
    `cert-msc50-cpp <cert-msc50-cpp.html>`_,
    `cert-msc51-cpp <cert-msc51-cpp.html>`_,
+   `cert-oop57-cpp <cert-oop57-cpp.html>`_,
    `cert-oop58-cpp <cert-oop58-cpp.html>`_,
    `clang-analyzer-core.DynamicTypePropagation <clang-analyzer-core.DynamicTypePropagation.html>`_,
    `clang-analyzer-core.uninitialized.CapturedBlockVariable <clang-analyzer-core.uninitialized.CapturedBlockVariable.html>`_,
@@ -187,6 +189,7 @@ Clang-Tidy Checks
    `misc-definitions-in-headers <misc-definitions-in-headers.html>`_, "Yes"
    `misc-misplaced-const <misc-misplaced-const.html>`_,
    `misc-new-delete-overloads <misc-new-delete-overloads.html>`_,
+   `misc-no-recursion <misc-no-recursion>`_,
    `misc-non-copyable-objects <misc-non-copyable-objects.html>`_,
    `misc-non-private-member-variables-in-classes <misc-non-private-member-variables-in-classes.html>`_,
    `misc-redundant-expression <misc-redundant-expression.html>`_, "Yes"
@@ -230,6 +233,7 @@ Clang-Tidy Checks
    `mpi-buffer-deref <mpi-buffer-deref.html>`_, "Yes"
    `mpi-type-mismatch <mpi-type-mismatch.html>`_, "Yes"
    `objc-avoid-nserror-init <objc-avoid-nserror-init.html>`_,
+   `objc-dealloc-in-category <objc-dealloc-in-category.html>`_,
    `objc-forbidden-subclassing <objc-forbidden-subclassing.html>`_,
    `objc-missing-hash <objc-missing-hash.html>`_,
    `objc-property-declaration <objc-property-declaration.html>`_, "Yes"

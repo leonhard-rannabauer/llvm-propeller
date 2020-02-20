@@ -956,6 +956,12 @@ void TargetPassConfig::addMachinePasses() {
   if (getOptLevel() != CodeGenOpt::None)
     addBlockPlacement();
 
+  // Insert before XRay Instrumentation.
+  addPass(&FEntryInserterID, false);
+
+  addPass(&XRayInstrumentationID, false);
+  addPass(&PatchableFunctionID, false);
+
   addPreEmitPass();
 
   if (TM->Options.EnableIPRA)
@@ -968,12 +974,6 @@ void TargetPassConfig::addMachinePasses() {
   addPass(&StackMapLivenessID, false);
   addPass(&LiveDebugValuesID, false);
 
-  // Insert before XRay Instrumentation.
-  addPass(&FEntryInserterID, false);
-
-  addPass(&XRayInstrumentationID, false);
-  addPass(&PatchableFunctionID, false);
-
   if (TM->Options.EnableMachineOutliner && getOptLevel() != CodeGenOpt::None &&
       EnableMachineOutliner != NeverOutline) {
     bool RunOnAllFunctions = (EnableMachineOutliner == AlwaysOutline);
@@ -982,6 +982,10 @@ void TargetPassConfig::addMachinePasses() {
     if (AddOutliner)
       addPass(createMachineOutlinerPass(RunOnAllFunctions));
   }
+
+  if (TM->getBBSections() == llvm::BasicBlockSection::List ||
+      TM->getBBSections() == llvm::BasicBlockSection::All)
+    addPass(&BBSectionsPrepareID);
 
   // Add passes that directly emit MI after all other MI passes.
   addPreEmitPass2();

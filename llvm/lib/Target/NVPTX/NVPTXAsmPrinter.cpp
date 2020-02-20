@@ -141,7 +141,7 @@ VisitGlobalVariableForEmission(const GlobalVariable *GV,
   Visiting.erase(GV);
 }
 
-void NVPTXAsmPrinter::EmitInstruction(const MachineInstr *MI) {
+void NVPTXAsmPrinter::emitInstruction(const MachineInstr *MI) {
   MCInst Inst;
   lowerToMCInst(MI, Inst);
   EmitToStreamer(*OutStreamer, Inst);
@@ -434,13 +434,13 @@ bool NVPTXAsmPrinter::isLoopHeaderOfNoUnroll(
   return false;
 }
 
-void NVPTXAsmPrinter::EmitBasicBlockStart(const MachineBasicBlock &MBB) {
-  AsmPrinter::EmitBasicBlockStart(MBB);
+void NVPTXAsmPrinter::emitBasicBlockStart(const MachineBasicBlock &MBB) {
+  AsmPrinter::emitBasicBlockStart(MBB);
   if (isLoopHeaderOfNoUnroll(MBB))
     OutStreamer->EmitRawText(StringRef("\t.pragma \"nounroll\";\n"));
 }
 
-void NVPTXAsmPrinter::EmitFunctionEntryLabel() {
+void NVPTXAsmPrinter::emitFunctionEntryLabel() {
   SmallString<128> Str;
   raw_svector_ostream O(Str);
 
@@ -489,14 +489,14 @@ bool NVPTXAsmPrinter::runOnMachineFunction(MachineFunction &F) {
   return Result;
 }
 
-void NVPTXAsmPrinter::EmitFunctionBodyStart() {
+void NVPTXAsmPrinter::emitFunctionBodyStart() {
   SmallString<128> Str;
   raw_svector_ostream O(Str);
   emitDemotedVars(&MF->getFunction(), O);
   OutStreamer->EmitRawText(O.str());
 }
 
-void NVPTXAsmPrinter::EmitFunctionBodyEnd() {
+void NVPTXAsmPrinter::emitFunctionBodyEnd() {
   VRegMapping.clear();
 }
 
@@ -982,7 +982,7 @@ void NVPTXAsmPrinter::emitLinkageDirective(const GlobalValue *V,
       msg.append("Error: ");
       msg.append("Symbol ");
       if (V->hasName())
-        msg.append(V->getName());
+        msg.append(std::string(V->getName()));
       msg.append("has unsupported appending linkage type");
       llvm_unreachable(msg.c_str());
     } else if (!V->hasInternalLinkage() &&
@@ -1439,7 +1439,7 @@ void NVPTXAsmPrinter::emitFunctionParamList(const Function *F, raw_ostream &O) {
     if (isKernelFunction(*F)) {
       if (isSampler(*I) || isImage(*I)) {
         if (isImage(*I)) {
-          std::string sname = I->getName();
+          std::string sname = std::string(I->getName());
           if (isImageWriteOnly(*I) || isImageReadWrite(*I)) {
             if (hasImageHandles)
               O << "\t.param .u64 .ptr .surfref ";

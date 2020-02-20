@@ -90,9 +90,9 @@ enum NodeType : unsigned {
   BICi,
   ORRi,
 
-  // Vector bit select: similar to ISD::VSELECT but not all bits within an
+  // Vector bitwise select: similar to ISD::VSELECT but not all bits within an
   // element must be identical.
-  BSL,
+  BSP,
 
   // Vector arithmetic negation
   NEG,
@@ -166,7 +166,7 @@ enum NodeType : unsigned {
   // Vector bitwise negation
   NOT,
 
-  // Vector bitwise selection
+  // Vector bitwise insertion
   BIT,
 
   // Compare-and-branch
@@ -215,6 +215,13 @@ enum NodeType : unsigned {
   PTEST,
   PTRUE,
 
+  DUP_PRED,
+
+  LDNF1,
+  LDNF1S,
+  LDFF1,
+  LDFF1S,
+
   // Unsigned gather loads.
   GLD1,
   GLD1_SCALED,
@@ -240,6 +247,10 @@ enum NodeType : unsigned {
   SST1_UXTW_SCALED,
   SST1_SXTW_SCALED,
   SST1_IMM,
+
+  // Strict (exception-raising) floating point comparison
+  STRICT_FCMP = ISD::FIRST_TARGET_STRICTFP_OPCODE,
+  STRICT_FCMPE,
 
   // NEON Load/Store with post-increment base updates
   LD2post = ISD::FIRST_TARGET_MEMORY_OPCODE,
@@ -272,7 +283,8 @@ enum NodeType : unsigned {
   STZ2G,
 
   LDP,
-  STP
+  STP,
+  STNP
 };
 
 } // end namespace AArch64ISD
@@ -376,9 +388,6 @@ public:
   MachineBasicBlock *EmitLoweredCatchRet(MachineInstr &MI,
                                            MachineBasicBlock *BB) const;
 
-  MachineBasicBlock *EmitLoweredCatchPad(MachineInstr &MI,
-                                         MachineBasicBlock *BB) const;
-
   MachineBasicBlock *
   EmitInstrWithCustomInserter(MachineInstr &MI,
                               MachineBasicBlock *MBB) const override;
@@ -418,13 +427,11 @@ public:
 
   bool shouldConsiderGEPOffsetSplit() const override;
 
-  EVT getOptimalMemOpType(uint64_t Size, unsigned DstAlign, unsigned SrcAlign,
-                          bool IsMemset, bool ZeroMemset, bool MemcpyStrSrc,
+  EVT getOptimalMemOpType(const MemOp &Op,
                           const AttributeList &FuncAttributes) const override;
 
-  LLT getOptimalMemOpLLT(uint64_t Size, unsigned DstAlign, unsigned SrcAlign,
-                          bool IsMemset, bool ZeroMemset, bool MemcpyStrSrc,
-                          const AttributeList &FuncAttributes) const override;
+  LLT getOptimalMemOpLLT(const MemOp &Op,
+                         const AttributeList &FuncAttributes) const override;
 
   /// Return true if the addressing mode represented by AM is legal for this
   /// target, for a load/store of the specified type.
@@ -611,7 +618,8 @@ public:
   unsigned getNumInterleavedAccesses(VectorType *VecTy,
                                      const DataLayout &DL) const;
 
-  MachineMemOperand::Flags getMMOFlags(const Instruction &I) const override;
+  MachineMemOperand::Flags getTargetMMOFlags(
+    const Instruction &I) const override;
 
   bool functionArgumentNeedsConsecutiveRegisters(Type *Ty,
                                                  CallingConv::ID CallConv,
@@ -746,6 +754,7 @@ private:
   SDValue LowerVectorOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerCONCAT_VECTORS(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerFSINCOS(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerVSCALE(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerVECREDUCE(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerATOMIC_LOAD_SUB(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerATOMIC_LOAD_AND(SDValue Op, SelectionDAG &DAG) const;

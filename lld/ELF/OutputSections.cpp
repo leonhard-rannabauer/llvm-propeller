@@ -243,20 +243,20 @@ void OutputSection::sort(llvm::function_ref<int(InputSectionBase *s)> order) {
       sortByOrder(isd->sections, order);
 }
 
-static void fill(uint8_t *Buf, size_t Size,
-                 const std::vector<std::vector<uint8_t>> &SFiller) {
-  unsigned I = 0;
-  unsigned NC = Size / SFiller.back().size();
-  for (unsigned C = 0; C < NC; ++C) {
-    memcpy(Buf + I, SFiller.back().data(), SFiller.back().size());
-    I += SFiller.back().size();
+static void nopInstrFill(uint8_t *buf, size_t size) {
+  unsigned i = 0;
+  std::vector<std::vector<uint8_t>> nopFiller = *target->nopInstrs;
+  unsigned num = size / nopFiller.back().size();
+  for (unsigned c = 0; c < num; ++c) {
+    memcpy(buf + i, nopFiller.back().data(), nopFiller.back().size());
+    i += nopFiller.back().size();
   }
-  unsigned remaining = Size - I;
+  unsigned remaining = size - i;
   if (!remaining)
     return;
-  if (SFiller.at(remaining - 1).size() != remaining)
-    fatal("Failed padding with special filler.");
-  memcpy(Buf + I, SFiller.at(remaining - 1).data(), remaining);
+  if (nopFiller[remaining - 1].size() != remaining)
+    fatal("failed padding with special filler");
+  memcpy(buf + i, nopFiller[remaining - 1].data(), remaining);
 }
 
 // Fill [Buf, Buf + Size) with Filler.
@@ -348,10 +348,8 @@ template <class ELFT> void OutputSection::writeTo(uint8_t *buf) {
       else
         end = buf + sections[i + 1]->outSecOff;
       // Check if this IS needs a special filler.
-      if (isec->SpecialFiller)
-        fill(start, end - start, *(isec->SpecialFiller));
-      else if (isec->Filler)
-        fill(start, end - start, *(isec->Filler));
+      if (isec->nopFiller && target->nopInstrs)
+        nopInstrFill(start, end - start);
       else
         fill(start, end - start, filler);
     }
@@ -379,8 +377,7 @@ static void finalizeShtGroup(OutputSection *os,
 }
 
 void OutputSection::finalize() {
-  std::vector<InputSection *> v = getInputSections(this);
-  InputSection *first = v.empty() ? nullptr : v[0];
+  InputSection *first = getFirstInputSection(this);
 
   if (flags & SHF_LINK_ORDER) {
     // We must preserve the link order dependency of sections with the
@@ -488,7 +485,15 @@ int getPriority(StringRef s) {
   return v;
 }
 
-std::vector<InputSection *> getInputSections(OutputSection *os) {
+InputSection *getFirstInputSection(const OutputSection *os) {
+  for (BaseCommand *base : os->sectionCommands)
+    if (auto *isd = dyn_cast<InputSectionDescription>(base))
+      if (!isd->sections.empty())
+        return isd->sections[0];
+  return nullptr;
+}
+
+std::vector<InputSection *> getInputSections(const OutputSection *os) {
   std::vector<InputSection *> ret;
   for (BaseCommand *base : os->sectionCommands)
     if (auto *isd = dyn_cast<InputSectionDescription>(base))

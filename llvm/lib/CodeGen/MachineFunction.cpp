@@ -285,6 +285,16 @@ getOrCreateJumpTableInfo(unsigned EntryKind) {
 }
 
 DenormalMode MachineFunction::getDenormalMode(const fltSemantics &FPType) const {
+  if (&FPType == &APFloat::IEEEsingle()) {
+    Attribute Attr = F.getFnAttribute("denormal-fp-math-f32");
+    StringRef Val = Attr.getValueAsString();
+    if (!Val.empty())
+      return parseDenormalFPAttribute(Val);
+
+    // If the f32 variant of the attribute isn't specified, try to use the
+    // generic one.
+  }
+
   // TODO: Should probably avoid the connection to the IR and store directly
   // in the MachineFunction.
   Attribute Attr = F.getFnAttribute("denormal-fp-math");
@@ -294,7 +304,7 @@ DenormalMode MachineFunction::getDenormalMode(const fltSemantics &FPType) const 
   // target by default.
   StringRef Val = Attr.getValueAsString();
   if (Val.empty())
-    return DenormalMode::Invalid;
+    return DenormalMode::getInvalid();
 
   return parseDenormalFPAttribute(Val);
 }
@@ -349,101 +359,6 @@ void MachineFunction::RenumberBlocks(MachineBasicBlock *MBB) {
   // numbering, shrink MBBNumbering now.
   assert(BlockNo <= MBBNumbering.size() && "Mismatch!");
   MBBNumbering.resize(BlockNo);
-}
-
-/// This function sorts basic blocks according to the sections in which they are
-/// emitted.  Basic block sections automatically turn on function sections so
-/// the entry block is in the function section.  The other sections that are
-/// created are:
-/// 1) Exception section - basic blocks that are landing pads
-/// 2) Cold section - basic blocks that will not have unique sections.
-/// 3) Unique section - one per basic block that is emitted in a unique section.
-bool MachineFunction::sortBBSections() {
-  // This should only be done once no matter how many times it is called.
-  if (this->BBSectionsSorted || !this->getBBSections())
-    return false;
-
-  DenseMap<const MachineBasicBlock *, unsigned> MBBOrder;
-  unsigned MBBOrderN = 0;
-
-  SmallSet<unsigned, 4> S = Target.getBBSectionsSet(F.getName());
-  for (auto &MBB : *this) {
-    // A unique BB section can only be created if this basic block is not
-    // used for exception table computations.  Entry basic block cannot
-    // start another section because the function starts one already.
-    if (MBB.getNumber() == this->front().getNumber()) {
-      if (MBB.isEHPad())
-        MBB.setExceptionSection();
-      continue;
-    }
-    // Also, check if this BB is a cold basic block in which case sections
-    // are not required with the list option.
-    bool isColdBB =
-        ((Target.getBBSections() == llvm::BasicBlockSection::List) &&
-         !S.empty() && !S.count(MBB.getNumber()));
-    if (MBB.isEHPad()) {
-      MBB.setExceptionSection();
-    } else if (isColdBB) {
-      MBB.setColdSection();
-    } else {
-      // Place this MBB in a unique section.  A unique section begins and ends
-      // that section.
-      MBB.setBeginSection();
-      MBB.setEndSection();
-    }
-    MBBOrder[&MBB] = MBBOrderN++;
-  }
-
-  // With -fbasicblock-sections, fall through blocks must be made
-  // explicitly reachable.  Do this after sections is set as
-  // unnecessary fallthroughs can be avoided.
-  for (auto &MBB : *this) {
-    MBB.insertUnconditionalFallthroughBranch();
-  }
-
-  // Order : Entry Block, Exception Section, Cold Section,
-  // Other Unique Sections.
-  auto SectionType = ([&](MachineBasicBlock &X) {
-    if (X.getNumber() == this->front().getNumber() && !X.isExceptionSection())
-      return 0;
-    if (X.isExceptionSection())
-      return 1;
-    else if (X.isColdSection())
-      return 2;
-    return 3;
-  });
-
-  this->sort(([&](MachineBasicBlock &X, MachineBasicBlock &Y) {
-    auto TypeX = SectionType(X);
-    auto TypeY = SectionType(Y);
-
-    return (TypeX != TypeY) ? TypeX < TypeY : MBBOrder[&X] < MBBOrder[&Y];
-  }));
-
-  // Set the basic block that begins or ends every section.  For unique
-  // sections, the same basic block begins and ends it.
-  MachineBasicBlock *PrevMBB = nullptr;
-  for (auto &MBB : *this) {
-    // Entry block
-    if (MBB.getNumber() == this->front().getNumber()) {
-      PrevMBB = &MBB;
-      continue;
-    }
-    assert(PrevMBB != nullptr && "First block was not a regular block!");
-    int TypeP = SectionType(*PrevMBB);
-    int TypeT = SectionType(MBB);
-    if (TypeP != TypeT) {
-      PrevMBB->setEndSection();
-      MBB.setBeginSection();
-    }
-    assert((TypeT != 3 || (MBB.isBeginSection() && MBB.isEndSection())) &&
-           "Basic block does not correctly begin or end a section");
-    PrevMBB = &MBB;
-  }
-  PrevMBB->setEndSection();
-
-  this->BBSectionsSorted = true;
-  return true;
 }
 
 /// This is used with -fbasicblock-sections or -fbasicblock-labels option.
@@ -993,7 +908,8 @@ try_next:;
 
 MachineFunction::CallSiteInfoMap::iterator
 MachineFunction::getCallSiteInfo(const MachineInstr *MI) {
-  assert(MI->isCall() && "Call site info refers only to call instructions!");
+  assert(MI->isCandidateForCallSiteEntry() &&
+         "Call site info refers only to call (MI) candidates");
 
   if (!Target.Options.EnableDebugEntryValues)
     return CallSitesInfo.end();
@@ -1002,7 +918,11 @@ MachineFunction::getCallSiteInfo(const MachineInstr *MI) {
 
 void MachineFunction::moveCallSiteInfo(const MachineInstr *Old,
                                        const MachineInstr *New) {
-  assert(New->isCall() && "Call site info refers only to call instructions!");
+  assert(Old->isCandidateForCallSiteEntry() &&
+         "Call site info refers only to call (MI) candidates");
+
+  if (!New->isCandidateForCallSiteEntry())
+    return eraseCallSiteInfo(Old);
 
   CallSiteInfoMap::iterator CSIt = getCallSiteInfo(Old);
   if (CSIt == CallSitesInfo.end())
@@ -1014,6 +934,8 @@ void MachineFunction::moveCallSiteInfo(const MachineInstr *Old,
 }
 
 void MachineFunction::eraseCallSiteInfo(const MachineInstr *MI) {
+  assert(MI->isCandidateForCallSiteEntry() &&
+         "Call site info refers only to call (MI) candidates");
   CallSiteInfoMap::iterator CSIt = getCallSiteInfo(MI);
   if (CSIt == CallSitesInfo.end())
     return;
@@ -1022,7 +944,11 @@ void MachineFunction::eraseCallSiteInfo(const MachineInstr *MI) {
 
 void MachineFunction::copyCallSiteInfo(const MachineInstr *Old,
                                        const MachineInstr *New) {
-  assert(New->isCall() && "Call site info refers only to call instructions!");
+  assert(Old->isCandidateForCallSiteEntry() &&
+         "Call site info refers only to call (MI) candidates");
+
+  if (!New->isCandidateForCallSiteEntry())
+    return eraseCallSiteInfo(Old);
 
   CallSiteInfoMap::iterator CSIt = getCallSiteInfo(Old);
   if (CSIt == CallSitesInfo.end())

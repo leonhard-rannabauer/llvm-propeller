@@ -138,10 +138,7 @@ size_t InputSectionBase::getSize() const {
     return s->getSize();
   if (uncompressedSize >= 0)
     return uncompressedSize;
-  if (Trimmed)
-    return rawData.size();
-  else
-    return rawData.size() - BytesDropped;
+  return rawData.size() - bytesDropped;
 }
 
 void InputSectionBase::uncompress() const {
@@ -310,7 +307,7 @@ std::string InputSectionBase::getLocation(uint64_t offset) {
 
   // File->sourceFile contains STT_FILE symbol that contains a
   // source file name. If it's missing, we use an object file name.
-  std::string srcFile = getFile<ELFT>()->sourceFile;
+  std::string srcFile = std::string(getFile<ELFT>()->sourceFile);
   if (srcFile.empty())
     srcFile = toString(file);
 
@@ -341,7 +338,7 @@ std::string InputSectionBase::getSrcMsg(const Symbol &sym, uint64_t offset) {
 //
 //   path/to/foo.o:(function bar) in archive path/to/bar.a
 std::string InputSectionBase::getObjMsg(uint64_t off) {
-  std::string filename = file->getName();
+  std::string filename = std::string(file->getName());
 
   std::string archive;
   if (!file->archiveName.empty())
@@ -444,8 +441,7 @@ void InputSection::copyRelocations(uint8_t *buf, ArrayRef<RelTy> rels) {
       // See the comment in maybeReportUndefined for PPC64 .toc .
       auto *d = dyn_cast<Defined>(&sym);
       if (!d) {
-        if (!sec->name.startswith(".debug") &&
-            !sec->name.startswith(".zdebug") && sec->name != ".eh_frame" &&
+        if (!isDebugSection(*sec) && sec->name != ".eh_frame" &&
             sec->name != ".gcc_except_table" && sec->name != ".toc") {
           uint32_t secIdx = cast<Undefined>(sym).discardedSecIdx;
           Elf_Shdr_Impl<ELFT> sec =
@@ -468,7 +464,7 @@ void InputSection::copyRelocations(uint8_t *buf, ArrayRef<RelTy> rels) {
       if (!RelTy::IsRela)
         addend = target->getImplicitAddend(bufLoc, type);
 
-      if (config->emachine == EM_MIPS && config->relocatable &&
+      if (config->emachine == EM_MIPS &&
           target->getRelExpr(type, sym, bufLoc) == R_MIPS_GOTREL) {
         // Some MIPS relocations depend on "gp" value. By default,
         // this value has 0x7ff0 offset from a .got section. But
@@ -488,6 +484,14 @@ void InputSection::copyRelocations(uint8_t *buf, ArrayRef<RelTy> rels) {
         p->r_addend = sym.getVA(addend) - section->getOutputSection()->addr;
       else if (config->relocatable && type != target->noneRel)
         sec->relocations.push_back({R_ABS, type, rel.r_offset, addend, &sym});
+    } else if (config->emachine == EM_PPC && type == R_PPC_PLTREL24 &&
+               p->r_addend >= 0x8000) {
+      // Similar to R_MIPS_GPREL{16,32}. If the addend of R_PPC_PLTREL24
+      // indicates that r30 is relative to the input section .got2
+      // (r_addend>=0x8000), after linking, r30 should be relative to the output
+      // section .got2 . To compensate for the shift, adjust r_addend by
+      // ppc32Got2OutSecOff.
+      p->r_addend += sec->file->ppc32Got2OutSecOff;
     }
   }
 }
@@ -859,8 +863,8 @@ void InputSection::relocateNonAlloc(uint8_t *buf, ArrayRef<RelTy> rels) {
       continue;
 
     if (expr == R_SIZE) {
-      target->relocateOne(bufLoc, type,
-                          SignExtend64<bits>(sym.getSize() + addend));
+      target->relocateNoSym(bufLoc, type,
+                            SignExtend64<bits>(sym.getSize() + addend));
       continue;
     }
 
@@ -881,15 +885,16 @@ void InputSection::relocateNonAlloc(uint8_t *buf, ArrayRef<RelTy> rels) {
       // address 0. For bug-compatibilty, we accept them with warnings. We
       // know Steel Bank Common Lisp as of 2018 have this bug.
       warn(msg);
-      target->relocateOne(bufLoc, type,
-                          SignExtend64<bits>(sym.getVA(addend - offset)));
+      target->relocateNoSym(bufLoc, type,
+                            SignExtend64<bits>(sym.getVA(addend - offset)));
       continue;
     }
 
     if (sym.isTls() && !Out::tlsPhdr)
-      target->relocateOne(bufLoc, type, 0);
+      target->relocateNoSym(bufLoc, type, 0);
     else
-      target->relocateOne(bufLoc, type, SignExtend64<bits>(sym.getVA(addend)));
+      target->relocateNoSym(bufLoc, type,
+                            SignExtend64<bits>(sym.getVA(addend)));
   }
 }
 
@@ -906,7 +911,7 @@ static void relocateNonAllocForRelocatable(InputSection *sec, uint8_t *buf) {
     assert(rel.expr == R_ABS);
     uint8_t *bufLoc = buf + rel.offset + sec->outSecOff;
     uint64_t targetVA = SignExtend64(rel.sym->getVA(rel.addend), bits);
-    target->relocateOne(bufLoc, rel.type, targetVA);
+    target->relocate(bufLoc, rel, targetVA);
   }
 }
 
@@ -951,29 +956,29 @@ void InputSectionBase::relocateAlloc(uint8_t *buf, uint8_t *bufEnd) {
     switch (expr) {
     case R_RELAX_GOT_PC:
     case R_RELAX_GOT_PC_NOPIC:
-      target->relaxGot(bufLoc, type, targetVA);
+      target->relaxGot(bufLoc, rel, targetVA);
       break;
     case R_PPC64_RELAX_TOC:
-      if (!tryRelaxPPC64TocIndirection(type, rel, bufLoc))
-        target->relocateOne(bufLoc, type, targetVA);
+      if (!tryRelaxPPC64TocIndirection(rel, bufLoc))
+        target->relocate(bufLoc, rel, targetVA);
       break;
     case R_RELAX_TLS_IE_TO_LE:
-      target->relaxTlsIeToLe(bufLoc, type, targetVA);
+      target->relaxTlsIeToLe(bufLoc, rel, targetVA);
       break;
     case R_RELAX_TLS_LD_TO_LE:
     case R_RELAX_TLS_LD_TO_LE_ABS:
-      target->relaxTlsLdToLe(bufLoc, type, targetVA);
+      target->relaxTlsLdToLe(bufLoc, rel, targetVA);
       break;
     case R_RELAX_TLS_GD_TO_LE:
     case R_RELAX_TLS_GD_TO_LE_NEG:
-      target->relaxTlsGdToLe(bufLoc, type, targetVA);
+      target->relaxTlsGdToLe(bufLoc, rel, targetVA);
       break;
     case R_AARCH64_RELAX_TLS_GD_TO_IE_PAGE_PC:
     case R_RELAX_TLS_GD_TO_IE:
     case R_RELAX_TLS_GD_TO_IE_ABS:
     case R_RELAX_TLS_GD_TO_IE_GOT_OFF:
     case R_RELAX_TLS_GD_TO_IE_GOTPLT:
-      target->relaxTlsGdToIe(bufLoc, type, targetVA);
+      target->relaxTlsGdToIe(bufLoc, rel, targetVA);
       break;
     case R_PPC64_CALL:
       // If this is a call to __tls_get_addr, it may be part of a TLS
@@ -998,24 +1003,23 @@ void InputSectionBase::relocateAlloc(uint8_t *buf, uint8_t *bufEnd) {
         }
         write32(bufLoc + 4, 0xe8410018); // ld %r2, 24(%r1)
       }
-      target->relocateOne(bufLoc, type, targetVA);
+      target->relocate(bufLoc, rel, targetVA);
       break;
     default:
-      target->relocateOne(bufLoc, type, targetVA);
+      target->relocate(bufLoc, rel, targetVA);
       break;
     }
   }
 
-  // Relocate JumpRelocations.  JumpRelocations are created when the opcode of
+  // Apply jumpInstrMods.  jumpInstrMods are created when the opcode of
   // a jmp insn must be modified to shrink the jmp insn or to flip the jmp
-  // insn.  This is primarily used to relax and optimize jumps created to use
+  // insn.  This is primarily used to relax and optimize jumps created with
   // basic block sections.
-  if (auto *Sec = dyn_cast<InputSection>(this)) {
-    for (const JumpRelocation &JumpRel : JumpRelocations) {
-      uint64_t Offset = JumpRel.Offset;
-      Offset += Sec->outSecOff;
-      uint8_t *BufLoc = buf + Offset;
-      target->relocateOneJumpRelocation(BufLoc, JumpRel.Original, JumpRel.Size);
+  if (auto *sec = dyn_cast<InputSection>(this)) {
+    for (const JumpInstrMod &jumpMod : jumpInstrMods) {
+      uint64_t offset = jumpMod.offset + sec->outSecOff;
+      uint8_t *bufLoc = buf + offset;
+      target->applyJumpInstrMod(bufLoc, jumpMod.original, jumpMod.size);
     }
   }
 }

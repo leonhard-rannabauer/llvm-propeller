@@ -11,6 +11,7 @@
 ///
 //===----------------------------------------------------------------------===//
 
+#include "clang/Sema/Template.h"
 #include "clang/Sema/SemaInternal.h"
 #include "TreeTransform.h"
 #include "TypeLocBuilder.h"
@@ -155,198 +156,169 @@ ParsedType Sema::getDestructorName(SourceLocation TildeLoc,
   //   }
   //
   // See also PR6358 and PR6359.
-  // For this reason, we're currently only doing the C++03 version of this
-  // code; the C++0x version has to wait until we get a proper spec.
-  QualType SearchType;
-  DeclContext *LookupCtx = nullptr;
-  bool isDependent = false;
-  bool LookInScope = false;
+  //
+  // For now, we accept all the cases in which the name given could plausibly
+  // be interpreted as a correct destructor name, issuing off-by-default
+  // extension diagnostics on the cases that don't strictly conform to the
+  // C++20 rules. This basically means we always consider looking in the
+  // nested-name-specifier prefix, the complete nested-name-specifier, and
+  // the scope, and accept if we find the expected type in any of the three
+  // places.
 
   if (SS.isInvalid())
     return nullptr;
 
+  // Whether we've failed with a diagnostic already.
+  bool Failed = false;
+
+  llvm::SmallVector<NamedDecl*, 8> FoundDecls;
+  llvm::SmallSet<CanonicalDeclPtr<Decl>, 8> FoundDeclSet;
+
   // If we have an object type, it's because we are in a
   // pseudo-destructor-expression or a member access expression, and
   // we know what type we're looking for.
-  if (ObjectTypePtr)
-    SearchType = GetTypeFromParser(ObjectTypePtr);
+  QualType SearchType =
+      ObjectTypePtr ? GetTypeFromParser(ObjectTypePtr) : QualType();
 
-  if (SS.isSet()) {
-    NestedNameSpecifier *NNS = SS.getScopeRep();
-
-    bool AlreadySearched = false;
-    bool LookAtPrefix = true;
-    // C++11 [basic.lookup.qual]p6:
-    //   If a pseudo-destructor-name (5.2.4) contains a nested-name-specifier,
-    //   the type-names are looked up as types in the scope designated by the
-    //   nested-name-specifier. Similarly, in a qualified-id of the form:
-    //
-    //     nested-name-specifier[opt] class-name :: ~ class-name
-    //
-    //   the second class-name is looked up in the same scope as the first.
-    //
-    // Here, we determine whether the code below is permitted to look at the
-    // prefix of the nested-name-specifier.
-    DeclContext *DC = computeDeclContext(SS, EnteringContext);
-    if (DC && DC->isFileContext()) {
-      AlreadySearched = true;
-      LookupCtx = DC;
-      isDependent = false;
-    } else if (auto *RD = dyn_cast_or_null<CXXRecordDecl>(DC)) {
-      if ((RD->hasDefinition() && RD->hasSimpleDestructor()) ||
-          !RD->hasDefinition())
-        LookAtPrefix = false;
-      LookInScope = true;
-    }
-
-    // The second case from the C++03 rules quoted further above.
-    NestedNameSpecifier *Prefix = nullptr;
-    if (AlreadySearched) {
-      // Nothing left to do.
-    } else if (LookAtPrefix && (Prefix = NNS->getPrefix())) {
-      CXXScopeSpec PrefixSS;
-      PrefixSS.Adopt(NestedNameSpecifierLoc(Prefix, SS.location_data()));
-      LookupCtx = computeDeclContext(PrefixSS, EnteringContext);
-      isDependent = isDependentScopeSpecifier(PrefixSS);
-    } else if (ObjectTypePtr) {
-      LookupCtx = computeDeclContext(SearchType);
-      isDependent = SearchType->isDependentType();
-    } else {
-      LookupCtx = computeDeclContext(SS, EnteringContext);
-      isDependent = LookupCtx && LookupCtx->isDependentContext();
-    }
-  } else if (ObjectTypePtr) {
-    // C++ [basic.lookup.classref]p3:
-    //   If the unqualified-id is ~type-name, the type-name is looked up
-    //   in the context of the entire postfix-expression. If the type T
-    //   of the object expression is of a class type C, the type-name is
-    //   also looked up in the scope of class C. At least one of the
-    //   lookups shall find a name that refers to (possibly
-    //   cv-qualified) T.
-    LookupCtx = computeDeclContext(SearchType);
-    isDependent = SearchType->isDependentType();
-    assert((isDependent || !SearchType->isIncompleteType()) &&
-           "Caller should have completed object type");
-
-    LookInScope = true;
-  } else {
-    // Perform lookup into the current scope (only).
-    LookInScope = true;
-  }
-
-  TypeDecl *NonMatchingTypeDecl = nullptr;
-  LookupResult Found(*this, &II, NameLoc, LookupOrdinaryName);
-  for (unsigned Step = 0; Step != 2; ++Step) {
-    // Look for the name first in the computed lookup context (if we
-    // have one) and, if that fails to find a match, in the scope (if
-    // we're allowed to look there).
-    Found.clear();
-    if (Step == 0 && LookupCtx) {
-      if (RequireCompleteDeclContext(SS, LookupCtx))
-        return nullptr;
-      LookupQualifiedName(Found, LookupCtx);
-    } else if (Step == 1 && LookInScope && S) {
-      LookupName(Found, S);
-    } else {
-      continue;
-    }
-
+  auto CheckLookupResult = [&](LookupResult &Found) -> ParsedType {
     // FIXME: Should we be suppressing ambiguities here?
-    if (Found.isAmbiguous())
+    if (Found.isAmbiguous()) {
+      Failed = true;
       return nullptr;
+    }
+
+    for (NamedDecl *D : Found) {
+      // Don't list a class twice in the lookup failure diagnostic if it's
+      // found by both its injected-class-name and by the name in the enclosing
+      // scope.
+      if (auto *RD = dyn_cast<CXXRecordDecl>(D))
+        if (RD->isInjectedClassName())
+          D = cast<NamedDecl>(RD->getParent());
+
+      if (FoundDeclSet.insert(D).second)
+        FoundDecls.push_back(D);
+    }
 
     if (TypeDecl *Type = Found.getAsSingle<TypeDecl>()) {
       QualType T = Context.getTypeDeclType(Type);
-      MarkAnyDeclReferenced(Type->getLocation(), Type, /*OdrUse=*/false);
-
       if (SearchType.isNull() || SearchType->isDependentType() ||
           Context.hasSameUnqualifiedType(T, SearchType)) {
-        // We found our type!
-
+        MarkAnyDeclReferenced(Type->getLocation(), Type, /*OdrUse=*/false);
         return CreateParsedType(T,
                                 Context.getTrivialTypeSourceInfo(T, NameLoc));
       }
-
-      if (!SearchType.isNull())
-        NonMatchingTypeDecl = Type;
     }
 
-    // If the name that we found is a class template name, and it is
-    // the same name as the template name in the last part of the
-    // nested-name-specifier (if present) or the object type, then
-    // this is the destructor for that class.
-    // FIXME: This is a workaround until we get real drafting for core
-    // issue 399, for which there isn't even an obvious direction.
-    if (ClassTemplateDecl *Template = Found.getAsSingle<ClassTemplateDecl>()) {
-      QualType MemberOfType;
-      if (SS.isSet()) {
-        if (DeclContext *Ctx = computeDeclContext(SS, EnteringContext)) {
-          // Figure out the type of the context, if it has one.
-          if (CXXRecordDecl *Record = dyn_cast<CXXRecordDecl>(Ctx))
-            MemberOfType = Context.getTypeDeclType(Record);
-        }
-      }
-      if (MemberOfType.isNull())
-        MemberOfType = SearchType;
+    return nullptr;
+  };
 
-      if (MemberOfType.isNull())
-        continue;
+  bool IsDependent = false;
 
-      // We're referring into a class template specialization. If the
-      // class template we found is the same as the template being
-      // specialized, we found what we are looking for.
-      if (const RecordType *Record = MemberOfType->getAs<RecordType>()) {
-        if (ClassTemplateSpecializationDecl *Spec
-              = dyn_cast<ClassTemplateSpecializationDecl>(Record->getDecl())) {
-          if (Spec->getSpecializedTemplate()->getCanonicalDecl() ==
-                Template->getCanonicalDecl())
-            return CreateParsedType(
-                MemberOfType,
-                Context.getTrivialTypeSourceInfo(MemberOfType, NameLoc));
-        }
+  auto LookupInObjectType = [&]() -> ParsedType {
+    if (Failed || SearchType.isNull())
+      return nullptr;
 
-        continue;
-      }
+    IsDependent |= SearchType->isDependentType();
 
-      // We're referring to an unresolved class template
-      // specialization. Determine whether we class template we found
-      // is the same as the template being specialized or, if we don't
-      // know which template is being specialized, that it at least
-      // has the same name.
-      if (const TemplateSpecializationType *SpecType
-            = MemberOfType->getAs<TemplateSpecializationType>()) {
-        TemplateName SpecName = SpecType->getTemplateName();
+    LookupResult Found(*this, &II, NameLoc, LookupDestructorName);
+    DeclContext *LookupCtx = computeDeclContext(SearchType);
+    if (!LookupCtx)
+      return nullptr;
+    LookupQualifiedName(Found, LookupCtx);
+    return CheckLookupResult(Found);
+  };
 
-        // The class template we found is the same template being
-        // specialized.
-        if (TemplateDecl *SpecTemplate = SpecName.getAsTemplateDecl()) {
-          if (SpecTemplate->getCanonicalDecl() == Template->getCanonicalDecl())
-            return CreateParsedType(
-                MemberOfType,
-                Context.getTrivialTypeSourceInfo(MemberOfType, NameLoc));
+  auto LookupInNestedNameSpec = [&](CXXScopeSpec &LookupSS) -> ParsedType {
+    if (Failed)
+      return nullptr;
 
-          continue;
-        }
+    IsDependent |= isDependentScopeSpecifier(LookupSS);
+    DeclContext *LookupCtx = computeDeclContext(LookupSS, EnteringContext);
+    if (!LookupCtx)
+      return nullptr;
 
-        // The class template we found has the same name as the
-        // (dependent) template name being specialized.
-        if (DependentTemplateName *DepTemplate
-                                    = SpecName.getAsDependentTemplateName()) {
-          if (DepTemplate->isIdentifier() &&
-              DepTemplate->getIdentifier() == Template->getIdentifier())
-            return CreateParsedType(
-                MemberOfType,
-                Context.getTrivialTypeSourceInfo(MemberOfType, NameLoc));
-
-          continue;
-        }
-      }
+    LookupResult Found(*this, &II, NameLoc, LookupDestructorName);
+    if (RequireCompleteDeclContext(LookupSS, LookupCtx)) {
+      Failed = true;
+      return nullptr;
     }
+    LookupQualifiedName(Found, LookupCtx);
+    return CheckLookupResult(Found);
+  };
+
+  auto LookupInScope = [&]() -> ParsedType {
+    if (Failed || !S)
+      return nullptr;
+
+    LookupResult Found(*this, &II, NameLoc, LookupDestructorName);
+    LookupName(Found, S);
+    return CheckLookupResult(Found);
+  };
+
+  // C++2a [basic.lookup.qual]p6:
+  //   In a qualified-id of the form
+  //
+  //     nested-name-specifier[opt] type-name :: ~ type-name
+  //
+  //   the second type-name is looked up in the same scope as the first.
+  //
+  // We interpret this as meaning that if you do a dual-scope lookup for the
+  // first name, you also do a dual-scope lookup for the second name, per
+  // C++ [basic.lookup.classref]p4:
+  //
+  //   If the id-expression in a class member access is a qualified-id of the
+  //   form
+  //
+  //     class-name-or-namespace-name :: ...
+  //
+  //   the class-name-or-namespace-name following the . or -> is first looked
+  //   up in the class of the object expression and the name, if found, is used.
+  //   Otherwise, it is looked up in the context of the entire
+  //   postfix-expression.
+  //
+  // This looks in the same scopes as for an unqualified destructor name:
+  //
+  // C++ [basic.lookup.classref]p3:
+  //   If the unqualified-id is ~ type-name, the type-name is looked up
+  //   in the context of the entire postfix-expression. If the type T
+  //   of the object expression is of a class type C, the type-name is
+  //   also looked up in the scope of class C. At least one of the
+  //   lookups shall find a name that refers to cv T.
+  //
+  // FIXME: The intent is unclear here. Should type-name::~type-name look in
+  // the scope anyway if it finds a non-matching name declared in the class?
+  // If both lookups succeed and find a dependent result, which result should
+  // we retain? (Same question for p->~type-name().)
+
+  if (NestedNameSpecifier *Prefix =
+      SS.isSet() ? SS.getScopeRep()->getPrefix() : nullptr) {
+    // This is
+    //
+    //   nested-name-specifier type-name :: ~ type-name
+    //
+    // Look for the second type-name in the nested-name-specifier.
+    CXXScopeSpec PrefixSS;
+    PrefixSS.Adopt(NestedNameSpecifierLoc(Prefix, SS.location_data()));
+    if (ParsedType T = LookupInNestedNameSpec(PrefixSS))
+      return T;
+  } else {
+    // This is one of
+    //
+    //   type-name :: ~ type-name
+    //   ~ type-name
+    //
+    // Look in the scope and (if any) the object type.
+    if (ParsedType T = LookupInScope())
+      return T;
+    if (ParsedType T = LookupInObjectType())
+      return T;
   }
 
-  if (isDependent) {
-    // We didn't find our type, but that's okay: it's dependent
-    // anyway.
+  if (Failed)
+    return nullptr;
+
+  if (IsDependent) {
+    // We didn't find our type, but that's OK: it's dependent anyway.
 
     // FIXME: What if we have no nested-name-specifier?
     QualType T = CheckTypenameType(ETK_None, SourceLocation(),
@@ -355,24 +327,96 @@ ParsedType Sema::getDestructorName(SourceLocation TildeLoc,
     return ParsedType::make(T);
   }
 
-  if (NonMatchingTypeDecl) {
-    QualType T = Context.getTypeDeclType(NonMatchingTypeDecl);
-    Diag(NameLoc, diag::err_destructor_expr_type_mismatch)
-      << T << SearchType;
-    Diag(NonMatchingTypeDecl->getLocation(), diag::note_destructor_type_here)
-      << T;
-  } else if (ObjectTypePtr)
-    Diag(NameLoc, diag::err_ident_in_dtor_not_a_type)
-      << &II;
-  else {
-    SemaDiagnosticBuilder DtorDiag = Diag(NameLoc,
-                                          diag::err_destructor_class_name);
-    if (S) {
-      const DeclContext *Ctx = S->getEntity();
-      if (const CXXRecordDecl *Class = dyn_cast_or_null<CXXRecordDecl>(Ctx))
-        DtorDiag << FixItHint::CreateReplacement(SourceRange(NameLoc),
-                                                 Class->getNameAsString());
+  // The remaining cases are all non-standard extensions imitating the behavior
+  // of various other compilers.
+  unsigned NumNonExtensionDecls = FoundDecls.size();
+
+  if (SS.isSet()) {
+    // For compatibility with older broken C++ rules and existing code,
+    //
+    //   nested-name-specifier :: ~ type-name
+    //
+    // also looks for type-name within the nested-name-specifier.
+    if (ParsedType T = LookupInNestedNameSpec(SS)) {
+      Diag(SS.getEndLoc(), diag::ext_dtor_named_in_wrong_scope)
+          << SS.getRange()
+          << FixItHint::CreateInsertion(SS.getEndLoc(),
+                                        ("::" + II.getName()).str());
+      return T;
     }
+
+    // For compatibility with other compilers and older versions of Clang,
+    //
+    //   nested-name-specifier type-name :: ~ type-name
+    //
+    // also looks for type-name in the scope. Unfortunately, we can't
+    // reasonably apply this fallback for dependent nested-name-specifiers.
+    if (SS.getScopeRep()->getPrefix()) {
+      if (ParsedType T = LookupInScope()) {
+        Diag(SS.getEndLoc(), diag::ext_qualified_dtor_named_in_lexical_scope)
+            << FixItHint::CreateRemoval(SS.getRange());
+        Diag(FoundDecls.back()->getLocation(), diag::note_destructor_type_here)
+            << GetTypeFromParser(T);
+        return T;
+      }
+    }
+  }
+
+  // We didn't find anything matching; tell the user what we did find (if
+  // anything).
+
+  // Don't tell the user about declarations we shouldn't have found.
+  FoundDecls.resize(NumNonExtensionDecls);
+
+  // List types before non-types.
+  std::stable_sort(FoundDecls.begin(), FoundDecls.end(),
+                   [](NamedDecl *A, NamedDecl *B) {
+                     return isa<TypeDecl>(A->getUnderlyingDecl()) >
+                            isa<TypeDecl>(B->getUnderlyingDecl());
+                   });
+
+  // Suggest a fixit to properly name the destroyed type.
+  auto MakeFixItHint = [&]{
+    const CXXRecordDecl *Destroyed = nullptr;
+    // FIXME: If we have a scope specifier, suggest its last component?
+    if (!SearchType.isNull())
+      Destroyed = SearchType->getAsCXXRecordDecl();
+    else if (S)
+      Destroyed = dyn_cast_or_null<CXXRecordDecl>(S->getEntity());
+    if (Destroyed)
+      return FixItHint::CreateReplacement(SourceRange(NameLoc),
+                                          Destroyed->getNameAsString());
+    return FixItHint();
+  };
+
+  if (FoundDecls.empty()) {
+    // FIXME: Attempt typo-correction?
+    Diag(NameLoc, diag::err_undeclared_destructor_name)
+      << &II << MakeFixItHint();
+  } else if (!SearchType.isNull() && FoundDecls.size() == 1) {
+    if (auto *TD = dyn_cast<TypeDecl>(FoundDecls[0]->getUnderlyingDecl())) {
+      assert(!SearchType.isNull() &&
+             "should only reject a type result if we have a search type");
+      QualType T = Context.getTypeDeclType(TD);
+      Diag(NameLoc, diag::err_destructor_expr_type_mismatch)
+          << T << SearchType << MakeFixItHint();
+    } else {
+      Diag(NameLoc, diag::err_destructor_expr_nontype)
+          << &II << MakeFixItHint();
+    }
+  } else {
+    Diag(NameLoc, SearchType.isNull() ? diag::err_destructor_name_nontype
+                                      : diag::err_destructor_expr_mismatch)
+        << &II << SearchType << MakeFixItHint();
+  }
+
+  for (NamedDecl *FoundD : FoundDecls) {
+    if (auto *TD = dyn_cast<TypeDecl>(FoundD->getUnderlyingDecl()))
+      Diag(FoundD->getLocation(), diag::note_destructor_type_here)
+          << Context.getTypeDeclType(TD);
+    else
+      Diag(FoundD->getLocation(), diag::note_destructor_nontype_here)
+          << FoundD;
   }
 
   return nullptr;
@@ -3867,7 +3911,7 @@ Sema::PerformImplicitConversion(Expr *From, QualType ToType,
     ICS.DiagnoseAmbiguousConversion(*this, From->getExprLoc(),
                           PDiag(diag::err_typecheck_ambiguous_condition)
                             << From->getSourceRange());
-     return ExprError();
+    return ExprError();
 
   case ImplicitConversionSequence::EllipsisConversion:
     llvm_unreachable("Cannot perform an ellipsis conversion");
@@ -4348,6 +4392,16 @@ Sema::PerformImplicitConversion(Expr *From, QualType ToType,
         ToAtomicType->castAs<AtomicType>()->getValueType(), From->getType()));
     From = ImpCastExprToType(From, ToAtomicType, CK_NonAtomicToAtomic,
                              VK_RValue, nullptr, CCK).get();
+  }
+
+  // Materialize a temporary if we're implicitly converting to a reference
+  // type. This is not required by the C++ rules but is necessary to maintain
+  // AST invariants.
+  if (ToType->isReferenceType() && From->isRValue()) {
+    ExprResult Res = TemporaryMaterializationConversion(From);
+    if (Res.isInvalid())
+      return ExprError();
+    From = Res.get();
   }
 
   // If this conversion sequence succeeded and involved implicitly converting a
@@ -7319,7 +7373,7 @@ ExprResult Sema::ActOnPseudoDestructorExpr(Scope *S, Expr *Base,
     ASTTemplateArgsPtr TemplateArgsPtr(TemplateId->getTemplateArgs(),
                                        TemplateId->NumArgs);
     TypeResult T = ActOnTemplateIdType(S,
-                                       TemplateId->SS,
+                                       SS,
                                        TemplateId->TemplateKWLoc,
                                        TemplateId->Template,
                                        TemplateId->Name,
@@ -7372,7 +7426,7 @@ ExprResult Sema::ActOnPseudoDestructorExpr(Scope *S, Expr *Base,
       ASTTemplateArgsPtr TemplateArgsPtr(TemplateId->getTemplateArgs(),
                                          TemplateId->NumArgs);
       TypeResult T = ActOnTemplateIdType(S,
-                                         TemplateId->SS,
+                                         SS,
                                          TemplateId->TemplateKWLoc,
                                          TemplateId->Template,
                                          TemplateId->Name,
@@ -8332,4 +8386,217 @@ Sema::CheckMicrosoftIfExistsSymbol(Scope *S, SourceLocation KeywordLoc,
     return IER_Error;
 
   return CheckMicrosoftIfExistsSymbol(S, SS, TargetNameInfo);
+}
+
+concepts::Requirement *Sema::ActOnSimpleRequirement(Expr *E) {
+  return BuildExprRequirement(E, /*IsSimple=*/true,
+                              /*NoexceptLoc=*/SourceLocation(),
+                              /*ReturnTypeRequirement=*/{});
+}
+
+concepts::Requirement *
+Sema::ActOnTypeRequirement(SourceLocation TypenameKWLoc, CXXScopeSpec &SS,
+                           SourceLocation NameLoc, IdentifierInfo *TypeName,
+                           TemplateIdAnnotation *TemplateId) {
+  assert(((!TypeName && TemplateId) || (TypeName && !TemplateId)) &&
+         "Exactly one of TypeName and TemplateId must be specified.");
+  TypeSourceInfo *TSI = nullptr;
+  if (TypeName) {
+    QualType T = CheckTypenameType(ETK_Typename, TypenameKWLoc,
+                                   SS.getWithLocInContext(Context), *TypeName,
+                                   NameLoc, &TSI, /*DeducedTypeContext=*/false);
+    if (T.isNull())
+      return nullptr;
+  } else {
+    ASTTemplateArgsPtr ArgsPtr(TemplateId->getTemplateArgs(),
+                               TemplateId->NumArgs);
+    TypeResult T = ActOnTypenameType(CurScope, TypenameKWLoc, SS,
+                                     TemplateId->TemplateKWLoc,
+                                     TemplateId->Template, TemplateId->Name,
+                                     TemplateId->TemplateNameLoc,
+                                     TemplateId->LAngleLoc, ArgsPtr,
+                                     TemplateId->RAngleLoc);
+    if (T.isInvalid())
+      return nullptr;
+    if (GetTypeFromParser(T.get(), &TSI).isNull())
+      return nullptr;
+  }
+  return BuildTypeRequirement(TSI);
+}
+
+concepts::Requirement *
+Sema::ActOnCompoundRequirement(Expr *E, SourceLocation NoexceptLoc) {
+  return BuildExprRequirement(E, /*IsSimple=*/false, NoexceptLoc,
+                              /*ReturnTypeRequirement=*/{});
+}
+
+concepts::Requirement *
+Sema::ActOnCompoundRequirement(
+    Expr *E, SourceLocation NoexceptLoc, CXXScopeSpec &SS,
+    TemplateIdAnnotation *TypeConstraint, unsigned Depth) {
+  // C++2a [expr.prim.req.compound] p1.3.3
+  //   [..] the expression is deduced against an invented function template
+  //   F [...] F is a void function template with a single type template
+  //   parameter T declared with the constrained-parameter. Form a new
+  //   cv-qualifier-seq cv by taking the union of const and volatile specifiers
+  //   around the constrained-parameter. F has a single parameter whose
+  //   type-specifier is cv T followed by the abstract-declarator. [...]
+  //
+  // The cv part is done in the calling function - we get the concept with
+  // arguments and the abstract declarator with the correct CV qualification and
+  // have to synthesize T and the single parameter of F.
+  auto &II = Context.Idents.get("expr-type");
+  auto *TParam = TemplateTypeParmDecl::Create(Context, CurContext,
+                                              SourceLocation(),
+                                              SourceLocation(), Depth,
+                                              /*Index=*/0, &II,
+                                              /*Typename=*/true,
+                                              /*ParameterPack=*/false,
+                                              /*HasTypeConstraint=*/true);
+
+  if (ActOnTypeConstraint(SS, TypeConstraint, TParam,
+                          /*EllpsisLoc=*/SourceLocation()))
+    // Just produce a requirement with no type requirements.
+    return BuildExprRequirement(E, /*IsSimple=*/false, NoexceptLoc, {});
+
+  auto *TPL = TemplateParameterList::Create(Context, SourceLocation(),
+                                            SourceLocation(),
+                                            ArrayRef<NamedDecl *>(TParam),
+                                            SourceLocation(),
+                                            /*RequiresClause=*/nullptr);
+  return BuildExprRequirement(
+      E, /*IsSimple=*/false, NoexceptLoc,
+      concepts::ExprRequirement::ReturnTypeRequirement(TPL));
+}
+
+concepts::ExprRequirement *
+Sema::BuildExprRequirement(
+    Expr *E, bool IsSimple, SourceLocation NoexceptLoc,
+    concepts::ExprRequirement::ReturnTypeRequirement ReturnTypeRequirement) {
+  auto Status = concepts::ExprRequirement::SS_Satisfied;
+  ConceptSpecializationExpr *SubstitutedConstraintExpr = nullptr;
+  if (E->isInstantiationDependent() || ReturnTypeRequirement.isDependent())
+    Status = concepts::ExprRequirement::SS_Dependent;
+  else if (NoexceptLoc.isValid() && canThrow(E) == CanThrowResult::CT_Can)
+    Status = concepts::ExprRequirement::SS_NoexceptNotMet;
+  else if (ReturnTypeRequirement.isSubstitutionFailure())
+    Status = concepts::ExprRequirement::SS_TypeRequirementSubstitutionFailure;
+  else if (ReturnTypeRequirement.isTypeConstraint()) {
+    // C++2a [expr.prim.req]p1.3.3
+    //     The immediately-declared constraint ([temp]) of decltype((E)) shall
+    //     be satisfied.
+    TemplateParameterList *TPL =
+        ReturnTypeRequirement.getTypeConstraintTemplateParameterList();
+    QualType MatchedType =
+        BuildDecltypeType(E, E->getBeginLoc()).getCanonicalType();
+    llvm::SmallVector<TemplateArgument, 1> Args;
+    Args.push_back(TemplateArgument(MatchedType));
+    TemplateArgumentList TAL(TemplateArgumentList::OnStack, Args);
+    MultiLevelTemplateArgumentList MLTAL(TAL);
+    for (unsigned I = 0; I < TPL->getDepth(); ++I)
+      MLTAL.addOuterRetainedLevel();
+    Expr *IDC =
+        cast<TemplateTypeParmDecl>(TPL->getParam(0))->getTypeConstraint()
+            ->getImmediatelyDeclaredConstraint();
+    ExprResult Constraint = SubstExpr(IDC, MLTAL);
+    assert(!Constraint.isInvalid() &&
+           "Substitution cannot fail as it is simply putting a type template "
+           "argument into a concept specialization expression's parameter.");
+
+    SubstitutedConstraintExpr =
+        cast<ConceptSpecializationExpr>(Constraint.get());
+    if (!SubstitutedConstraintExpr->isSatisfied())
+      Status = concepts::ExprRequirement::SS_ConstraintsNotSatisfied;
+  }
+  return new (Context) concepts::ExprRequirement(E, IsSimple, NoexceptLoc,
+                                                 ReturnTypeRequirement, Status,
+                                                 SubstitutedConstraintExpr);
+}
+
+concepts::ExprRequirement *
+Sema::BuildExprRequirement(
+    concepts::Requirement::SubstitutionDiagnostic *ExprSubstitutionDiagnostic,
+    bool IsSimple, SourceLocation NoexceptLoc,
+    concepts::ExprRequirement::ReturnTypeRequirement ReturnTypeRequirement) {
+  return new (Context) concepts::ExprRequirement(ExprSubstitutionDiagnostic,
+                                                 IsSimple, NoexceptLoc,
+                                                 ReturnTypeRequirement);
+}
+
+concepts::TypeRequirement *
+Sema::BuildTypeRequirement(TypeSourceInfo *Type) {
+  return new (Context) concepts::TypeRequirement(Type);
+}
+
+concepts::TypeRequirement *
+Sema::BuildTypeRequirement(
+    concepts::Requirement::SubstitutionDiagnostic *SubstDiag) {
+  return new (Context) concepts::TypeRequirement(SubstDiag);
+}
+
+concepts::Requirement *Sema::ActOnNestedRequirement(Expr *Constraint) {
+  return BuildNestedRequirement(Constraint);
+}
+
+concepts::NestedRequirement *
+Sema::BuildNestedRequirement(Expr *Constraint) {
+  ConstraintSatisfaction Satisfaction;
+  if (!Constraint->isInstantiationDependent() &&
+      CheckConstraintSatisfaction(nullptr, {Constraint}, /*TemplateArgs=*/{},
+                                  Constraint->getSourceRange(), Satisfaction))
+    return nullptr;
+  return new (Context) concepts::NestedRequirement(Context, Constraint,
+                                                   Satisfaction);
+}
+
+concepts::NestedRequirement *
+Sema::BuildNestedRequirement(
+    concepts::Requirement::SubstitutionDiagnostic *SubstDiag) {
+  return new (Context) concepts::NestedRequirement(SubstDiag);
+}
+
+RequiresExprBodyDecl *
+Sema::ActOnStartRequiresExpr(SourceLocation RequiresKWLoc,
+                             ArrayRef<ParmVarDecl *> LocalParameters,
+                             Scope *BodyScope) {
+  assert(BodyScope);
+
+  RequiresExprBodyDecl *Body = RequiresExprBodyDecl::Create(Context, CurContext,
+                                                            RequiresKWLoc);
+
+  PushDeclContext(BodyScope, Body);
+
+  for (ParmVarDecl *Param : LocalParameters) {
+    if (Param->hasDefaultArg())
+      // C++2a [expr.prim.req] p4
+      //     [...] A local parameter of a requires-expression shall not have a
+      //     default argument. [...]
+      Diag(Param->getDefaultArgRange().getBegin(),
+           diag::err_requires_expr_local_parameter_default_argument);
+    // Ignore default argument and move on
+
+    Param->setDeclContext(Body);
+    // If this has an identifier, add it to the scope stack.
+    if (Param->getIdentifier()) {
+      CheckShadow(BodyScope, Param);
+      PushOnScopeChains(Param, BodyScope);
+    }
+  }
+  return Body;
+}
+
+void Sema::ActOnFinishRequiresExpr() {
+  assert(CurContext && "DeclContext imbalance!");
+  CurContext = CurContext->getLexicalParent();
+  assert(CurContext && "Popped translation unit!");
+}
+
+ExprResult
+Sema::ActOnRequiresExpr(SourceLocation RequiresKWLoc,
+                        RequiresExprBodyDecl *Body,
+                        ArrayRef<ParmVarDecl *> LocalParameters,
+                        ArrayRef<concepts::Requirement *> Requirements,
+                        SourceLocation ClosingBraceLoc) {
+  return RequiresExpr::Create(Context, RequiresKWLoc, Body, LocalParameters,
+                              Requirements, ClosingBraceLoc);
 }

@@ -21,17 +21,20 @@ std::string toString(const NodeChain &c,
     if (it == slicePos)
       str += "\n....SLICE POSITION....\n";
     if (!c.controlFlowGraph)
-      str += std::to_string(n->controlFlowGraph->getEntryNode()->mappedAddr) + ":";
+      str +=
+          std::to_string(n->controlFlowGraph->getEntryNode()->mappedAddr) + ":";
     str += n->controlFlowGraph->getEntryNode() == n
                ? "Entry"
-               : std::to_string(n->shName.size() - n->controlFlowGraph->name.size() - 4);
+               : std::to_string(n->shName.size() -
+                                n->controlFlowGraph->name.size() - 4);
     str += " (size=" + std::to_string(n->shSize) +
-           ", freq=" + std::to_string(n->freq) + ")";
+           ", freq=" + std::to_string(n->freq) +
+           ", offset=" + std::to_string(n->chainOffset) + ")";
     if (n != c.nodes.back())
       str += " -> ";
   }
   str += " ]";
-  str += " score: " + std::to_string(c.Score);
+  str += " score: " + std::to_string(c.score);
   return str;
 }
 

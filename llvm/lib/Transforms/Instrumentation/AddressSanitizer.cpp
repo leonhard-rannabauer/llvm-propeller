@@ -1993,7 +1993,7 @@ void ModuleAddressSanitizer::SetComdatForGlobalMetadata(
     }
 
     if (!InternalSuffix.empty() && G->hasLocalLinkage()) {
-      std::string Name = G->getName();
+      std::string Name = std::string(G->getName());
       Name += InternalSuffix;
       C = M.getOrInsertComdat(Name);
     } else {
@@ -2362,7 +2362,7 @@ bool ModuleAddressSanitizer::InstrumentGlobals(IRBuilder<> &IRB, Module &M,
       // Set meaningful attributes for indicator symbol.
       ODRIndicatorSym->setVisibility(NewGlobal->getVisibility());
       ODRIndicatorSym->setDLLStorageClass(NewGlobal->getDLLStorageClass());
-      ODRIndicatorSym->setAlignment(Align::None());
+      ODRIndicatorSym->setAlignment(Align(1));
       ODRIndicator = ODRIndicatorSym;
     }
 
@@ -2836,7 +2836,8 @@ void FunctionStackPoisoner::copyToShadowInline(ArrayRef<uint8_t> ShadowMask,
     Value *Ptr = IRB.CreateAdd(ShadowBase, ConstantInt::get(IntptrTy, i));
     Value *Poison = IRB.getIntN(StoreSizeInBytes * 8, Val);
     IRB.CreateAlignedStore(
-        Poison, IRB.CreateIntToPtr(Ptr, Poison->getType()->getPointerTo()), 1);
+        Poison, IRB.CreateIntToPtr(Ptr, Poison->getType()->getPointerTo()),
+        Align(1));
 
     i += StoreSizeInBytes;
   }
@@ -3118,11 +3119,21 @@ void FunctionStackPoisoner::processStaticAllocas() {
     LocalStackBaseAlloca = LocalStackBase;
   }
 
+  // It shouldn't matter whether we pass an `alloca` or a `ptrtoint` as the
+  // dbg.declare address opereand, but passing a `ptrtoint` seems to confuse
+  // later passes and can result in dropped variable coverage in debug info.
+  Value *LocalStackBaseAllocaPtr =
+      isa<PtrToIntInst>(LocalStackBaseAlloca)
+          ? cast<PtrToIntInst>(LocalStackBaseAlloca)->getPointerOperand()
+          : LocalStackBaseAlloca;
+  assert(isa<AllocaInst>(LocalStackBaseAllocaPtr) &&
+         "Variable descriptions relative to ASan stack base will be dropped");
+
   // Replace Alloca instructions with base+offset.
   for (const auto &Desc : SVD) {
     AllocaInst *AI = Desc.AI;
-    replaceDbgDeclareForAlloca(AI, LocalStackBaseAlloca, DIB, DIExprFlags,
-                               Desc.Offset);
+    replaceDbgDeclare(AI, LocalStackBaseAllocaPtr, DIB, DIExprFlags,
+                      Desc.Offset);
     Value *NewAllocaPtr = IRB.CreateIntToPtr(
         IRB.CreateAdd(LocalStackBase, ConstantInt::get(IntptrTy, Desc.Offset)),
         AI->getType());

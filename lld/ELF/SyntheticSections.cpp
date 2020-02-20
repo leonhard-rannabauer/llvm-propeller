@@ -24,7 +24,6 @@
 #include "Writer.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
-#include "lld/Common/PropellerCommon.h"
 #include "lld/Common/Strings.h"
 #include "lld/Common/Threads.h"
 #include "lld/Common/Version.h"
@@ -33,10 +32,12 @@
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/DebugInfo/DWARF/DWARFDebugPubTable.h"
 #include "llvm/Object/ELFObjectFile.h"
+#include "llvm/ProfileData/BBSectionsProf.h"
 #include "llvm/Support/Compression.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MD5.h"
+#include "llvm/Support/TimeProfiler.h"
 #include <cstdlib>
 #include <thread>
 
@@ -46,6 +47,7 @@ using namespace llvm::ELF;
 using namespace llvm::object;
 using namespace llvm::support;
 
+using llvm::propeller::SymbolEntry;
 using llvm::support::endian::read32le;
 using llvm::support::endian::write32le;
 using llvm::support::endian::write64le;
@@ -2113,7 +2115,7 @@ void SymbolTableBaseSection::addSymbol(Symbol *b) {
   bool hashIt = b->isLocal();
   uint32_t offset = strTabSec.addString(b->getName(), hashIt);
   symbols.push_back({b, offset});
-  if (lld::propeller::SymbolEntry::isBBSymbol(b->getName())) {
+  if (SymbolEntry::isBBSymbol(b->getName())) {
     EndsMap.emplace(std::piecewise_construct, std::forward_as_tuple(EndKey),
                     std::forward_as_tuple(offset, SName.size()));
   }
@@ -2237,7 +2239,7 @@ template <class ELFT> void SymbolTableSection<ELFT>::writeTo(uint8_t *buf) {
         // We already set the less-significant bit for symbols
         // marked by the `STO_MIPS_MICROMIPS` flag and for microMIPS PLT
         // records. That allows us to distinguish such symbols in
-        // the `MIPS<ELFT>::relocateOne()` routine. Now we should
+        // the `MIPS<ELFT>::relocate()` routine. Now we should
         // clear that bit for non-dynamic symbol table, so tools
         // like `objdump` will be able to deal with a correct
         // symbol position.
@@ -2510,6 +2512,9 @@ PltSection::PltSection()
   if (config->emachine == EM_PPC || config->emachine == EM_PPC64) {
     name = ".glink";
     alignment = 4;
+    // PLTresolve is at the end.
+    if (config->emachine == EM_PPC)
+      footerSize = 64;
   }
 
   // On x86 when IBT is enabled, this section contains the second PLT (lazy
@@ -2547,7 +2552,7 @@ void PltSection::addEntry(Symbol &sym) {
 }
 
 size_t PltSection::getSize() const {
-  return headerSize + entries.size() * target->pltEntrySize;
+  return headerSize + entries.size() * target->pltEntrySize + footerSize;
 }
 
 bool PltSection::isNeeded() const {
@@ -2804,8 +2809,8 @@ createSymbols(ArrayRef<std::vector<GdbIndexSection::NameAttrEntry>> nameAttrs,
   size_t numShards = 32;
   size_t concurrency = 1;
   if (threadsEnabled)
-    concurrency =
-        std::min<size_t>(PowerOf2Floor(hardware_concurrency()), numShards);
+    concurrency = std::min<size_t>(
+        hardware_concurrency().compute_thread_count(), numShards);
 
   // A sharded map to uniquify symbols by name.
   std::vector<DenseMap<CachedHashStringRef, size_t>> map(numShards);
@@ -3248,8 +3253,8 @@ void MergeNoTailSection::finalizeContents() {
   // operations in the following tight loop.
   size_t concurrency = 1;
   if (threadsEnabled)
-    concurrency =
-        std::min<size_t>(PowerOf2Floor(hardware_concurrency()), numShards);
+    concurrency = std::min<size_t>(
+        hardware_concurrency().compute_thread_count(), numShards);
 
   // Add section pieces to the builders.
   parallelForEachN(0, concurrency, [&](size_t threadId) {
@@ -3295,6 +3300,7 @@ MergeSyntheticSection *createMergeSynthetic(StringRef name, uint32_t type,
 }
 
 template <class ELFT> void splitSections() {
+  llvm::TimeTraceScope timeScope("Split sections");
   // splitIntoPieces needs to be called on each MergeInputSection
   // before calling finalizeContents().
   parallelForEach(inputSections, [](InputSectionBase *sec) {
@@ -3489,7 +3495,7 @@ void ARMExidxSyntheticSection::writeTo(uint8_t *buf) {
       memcpy(buf + offset, cantUnwindData, sizeof(cantUnwindData));
       uint64_t s = isec->getVA();
       uint64_t p = getVA() + offset;
-      target->relocateOne(buf + offset, R_ARM_PREL31, s - p);
+      target->relocateNoSym(buf + offset, R_ARM_PREL31, s - p);
       offset += 8;
     }
   }
@@ -3497,7 +3503,7 @@ void ARMExidxSyntheticSection::writeTo(uint8_t *buf) {
   memcpy(buf + offset, cantUnwindData, sizeof(cantUnwindData));
   uint64_t s = sentinel->getVA(sentinel->getSize());
   uint64_t p = getVA() + offset;
-  target->relocateOne(buf + offset, R_ARM_PREL31, s - p);
+  target->relocateNoSym(buf + offset, R_ARM_PREL31, s - p);
   assert(size == offset + 8);
 }
 
@@ -3512,19 +3518,14 @@ bool ARMExidxSyntheticSection::classof(const SectionBase *d) {
 }
 
 ThunkSection::ThunkSection(OutputSection *os, uint64_t off)
-    : SyntheticSection(SHF_ALLOC | SHF_EXECINSTR, SHT_PROGBITS,
-                       config->wordsize, ".text.thunk") {
+    : SyntheticSection(SHF_ALLOC | SHF_EXECINSTR, SHT_PROGBITS, 4,
+                       ".text.thunk") {
   this->parent = os;
   this->outSecOff = off;
 }
 
-// When the errata patching is on, we round the size up to a 4 KiB
-// boundary. This limits the effect that adding Thunks has on the addresses
-// of the program modulo 4 KiB. As the errata patching is sensitive to address
-// modulo 4 KiB this can prevent further patches from being needed due to
-// Thunk insertion.
 size_t ThunkSection::getSize() const {
-  if (config->fixCortexA53Errata843419 || config->fixCortexA8)
+  if (roundUpSizeForErrata)
     return alignTo(size, 4096);
   return size;
 }

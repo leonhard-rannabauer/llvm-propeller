@@ -36,25 +36,29 @@ public:
   void writePltHeader(uint8_t *buf) const override;
   void writePlt(uint8_t *buf, const Symbol &sym,
                 uint64_t pltEntryAddr) const override;
-  void relocateOne(uint8_t *loc, RelType type, uint64_t val) const override;
-  void relocateOneJumpRelocation(uint8_t *Loc, JumpRelType Type,
-                                 unsigned Size) const override;
+  void relocate(uint8_t *loc, const Relocation &rel,
+                uint64_t val) const override;
+  void applyJumpInstrMod(uint8_t *Loc, JumpModType Type,
+                         unsigned size) const override;
 
   RelExpr adjustRelaxExpr(RelType type, const uint8_t *data,
                           RelExpr expr) const override;
-  void relaxGot(uint8_t *loc, RelType type, uint64_t val) const override;
-  void relaxTlsGdToIe(uint8_t *loc, RelType type, uint64_t val) const override;
-  void relaxTlsGdToLe(uint8_t *loc, RelType type, uint64_t val) const override;
-  void relaxTlsIeToLe(uint8_t *loc, RelType type, uint64_t val) const override;
-  void relaxTlsLdToLe(uint8_t *loc, RelType type, uint64_t val) const override;
+  void relaxGot(uint8_t *loc, const Relocation &rel,
+                uint64_t val) const override;
+  void relaxTlsGdToIe(uint8_t *loc, const Relocation &rel,
+                      uint64_t val) const override;
+  void relaxTlsGdToLe(uint8_t *loc, const Relocation &rel,
+                      uint64_t val) const override;
+  void relaxTlsIeToLe(uint8_t *loc, const Relocation &rel,
+                      uint64_t val) const override;
+  void relaxTlsLdToLe(uint8_t *loc, const Relocation &rel,
+                      uint64_t val) const override;
   bool adjustPrologueForCrossSplitStack(uint8_t *loc, uint8_t *end,
                                         uint8_t stOther) const override;
-  bool deleteFallThruJmpInsn(InputSection &IS, InputFile *File,
-                             InputSection *NextIS) const override;
-  unsigned shrinkJmpInsn(InputSection &IS, InputFile *File,
-                         uint32_t MaxAlignment) const override;
-  unsigned growJmpInsn(InputSection &IS, InputFile *File,
-                       uint32_t MaxAlignment) const override;
+  bool deleteFallThruJmpInsn(InputSection &is, InputFile *file,
+                             InputSection *nextIS) const override;
+  unsigned shrinkJmpInsn(InputSection &is, InputFile *file) const override;
+  unsigned growJmpInsn(InputSection &is, InputFile *file) const override;
 };
 } // namespace
 
@@ -85,6 +89,7 @@ X86_64::X86_64() {
   pltEntrySize = 16;
   ipltEntrySize = 16;
   trapInstr = {0xcc, 0xcc, 0xcc, 0xcc}; // 0xcc = INT3
+  nopInstrs = X86_NOP_INSTRUCTIONS;
 
   // Align to the large page size (known as a superpage or huge page).
   // FreeBSD automatically promotes large, superpage-aligned allocations.
@@ -111,16 +116,16 @@ enum JmpInsnOpcode : uint32_t {
 
 // Given the first (optional) and second byte of the insn's opcode, this
 // returns the corresponding enum value.
-static JmpInsnOpcode getJmpInsnType(const uint8_t *First,
-                                    const uint8_t *Second) {
-  if (*Second == 0xe9)
+static JmpInsnOpcode getJmpInsnType(const uint8_t *first,
+                                    const uint8_t *second) {
+  if (*second == 0xe9)
     return J_JMP_32;
 
-  if (First == nullptr)
+  if (first == nullptr)
     return J_UNKNOWN;
 
-  if (*First == 0x0f) {
-    switch (*Second) {
+  if (*first == 0x0f) {
+    switch (*second) {
     case 0x84:
       return J_JE_32;
     case 0x85:
@@ -148,24 +153,24 @@ static JmpInsnOpcode getJmpInsnType(const uint8_t *First,
 
 // Return the relocation index for input section IS with a specific Offset.
 // Returns the maximum size of the vector if no such relocation is found.
-static unsigned getRelocationWithOffset(const InputSection &IS,
-                                        uint64_t Offset) {
-  unsigned I = 0;
-  for (; I < IS.relocations.size(); ++I) {
-    if (IS.relocations[I].offset == Offset && IS.relocations[I].expr != R_NONE)
+static unsigned getRelocationWithOffset(const InputSection &is,
+                                        uint64_t offset) {
+  unsigned i = 0;
+  for (unsigned e = is.relocations.size(); i < e; ++i) {
+    if (is.relocations[i].offset == offset && is.relocations[i].expr != R_NONE)
       break;
   }
-  return I;
+  return i;
 }
 
-static unsigned getJumpRelocationWithOffset(const InputSection &IS,
-                                            uint64_t Offset) {
-  unsigned I = 0;
-  for (; I < IS.JumpRelocations.size(); ++I) {
-    if (IS.JumpRelocations[I].Offset == Offset)
+static unsigned getJumpInstrModWithOffset(const InputSection &is,
+                                          uint64_t offset) {
+  unsigned i = 0;
+  for (; i < is.jumpInstrMods.size(); ++i) {
+    if (is.jumpInstrMods[i].offset == offset)
       break;
   }
-  return I;
+  return i;
 }
 
 static bool isRelocationForJmpInsn(Relocation &R) {
@@ -173,31 +178,25 @@ static bool isRelocationForJmpInsn(Relocation &R) {
           R.type == R_X86_64_PC8);
 }
 
-static bool isDirectJmpInsnOpcode(const uint8_t *Opcode) {
-  return (*Opcode == 0xe9);
-}
-
-// Return true if Relocaction R points to the first instruction in the
+// Return true if Relocation R points to the first instruction in the
 // next section.
-static bool isFallThruRelocation(InputSection &IS, InputFile *File,
-                                 InputSection *NextIS, Relocation &R) {
-  if (!isRelocationForJmpInsn(R))
+// TODO: Delete this once a new relocation is added for this.
+static bool isFallThruRelocation(InputSection &is, InputFile *file,
+                                 InputSection *nextIS, Relocation &r) {
+  if (!isRelocationForJmpInsn(r))
     return false;
 
-  uint64_t AddrLoc = (IS.getOutputSection())->addr + IS.outSecOff + R.offset;
-  uint64_t TargetOffset =
-      SignExtend64(InputSectionBase::getRelocTargetVA(File, R.type, R.addend,
-                                                      AddrLoc, *R.sym, R.expr),
+  uint64_t addrLoc = (is.getOutputSection())->addr + is.outSecOff + r.offset;
+  uint64_t targetOffset =
+      SignExtend64(InputSectionBase::getRelocTargetVA(file, r.type, r.addend,
+                                                      addrLoc, *r.sym, r.expr),
                    (config->wordsize * 8));
 
   // If this jmp is a fall thru, the target offset is the beginning of the
   // next section.
   uint64_t NextSectionOffset =
-      NextIS->getOutputSection()->addr + NextIS->outSecOff;
-  if ((AddrLoc + 4 + TargetOffset) != NextSectionOffset)
-    return false;
-
-  return true;
+      nextIS->getOutputSection()->addr + nextIS->outSecOff;
+  return ((addrLoc + 4 + targetOffset) == NextSectionOffset);
 }
 
 // Return the jmp instruction opcode that is the inverse of the given
@@ -227,112 +226,109 @@ static JmpInsnOpcode invertJmpOpcode(const JmpInsnOpcode opcode) {
   default:
     return J_UNKNOWN;
   }
-  return J_UNKNOWN;
 }
 
 // Deletes direct jump instruction in input sections that jumps to the
 // following section as it is not required.  If there are two consecutive jump
 // instructions, it checks if they can be flipped and one can be deleted.
-bool X86_64::deleteFallThruJmpInsn(InputSection &IS, InputFile *File,
-                                   InputSection *NextIS) const {
-  const unsigned SizeOfDirectJmpInsn = 5;
+bool X86_64::deleteFallThruJmpInsn(InputSection &is, InputFile *file,
+                                   InputSection *nextIS) const {
+  const unsigned sizeOfDirectJmpInsn = 5;
 
-  if (NextIS == nullptr)
+  if (nextIS == nullptr)
     return false;
 
-  if (IS.getSize() < SizeOfDirectJmpInsn)
+  if (is.getSize() < sizeOfDirectJmpInsn)
     return false;
 
   // If this jmp insn can be removed, it is the last insn and the
   // relocation is 4 bytes before the end.
-  unsigned RIndex = getRelocationWithOffset(IS, (IS.getSize() - 4));
-  if (RIndex == IS.relocations.size())
+  unsigned rIndex = getRelocationWithOffset(is, (is.getSize() - 4));
+  if (rIndex == is.relocations.size())
     return false;
 
-  Relocation &R = IS.relocations[RIndex];
+  Relocation &r = is.relocations[rIndex];
 
   // Check if the relocation corresponds to a direct jmp.
-  const uint8_t *SecContents = IS.data().data();
-  if (!isDirectJmpInsnOpcode(SecContents + R.offset - 1))
+  const uint8_t *secContents = is.data().data();
+  // If it is not a direct jmp instruction, there is nothing to do here.
+  if (*(secContents + r.offset - 1) != 0xe9)
     return false;
 
-  if (isFallThruRelocation(IS, File, NextIS, R)) {
+  if (isFallThruRelocation(is, file, nextIS, r)) {
     // This is a fall thru and can be deleted.
-    R.expr = R_NONE;
-    R.offset = 0;
-    IS.drop_back(SizeOfDirectJmpInsn);
-    IS.SpecialFiller = X86_NOP_INSTRUCTIONS;
+    r.expr = R_NONE;
+    r.offset = 0;
+    is.drop_back(sizeOfDirectJmpInsn);
+    is.nopFiller = true;
     return true;
   }
 
   // Now, check if flip and delete is possible.
-  const unsigned SizeOfJmpCCInsn = 6;
+  const unsigned sizeOfJmpCCInsn = 6;
   // To flip, there must be atleast one JmpCC and one direct jmp.
-  if (IS.getSize() < (SizeOfDirectJmpInsn + SizeOfJmpCCInsn))
+  if (is.getSize() < (sizeOfDirectJmpInsn + sizeOfJmpCCInsn))
     return 0;
 
-  unsigned RbIndex =
-      getRelocationWithOffset(IS, (IS.getSize() - SizeOfDirectJmpInsn - 4));
-  if (RbIndex == IS.relocations.size())
+  unsigned rbIndex =
+      getRelocationWithOffset(is, (is.getSize() - sizeOfDirectJmpInsn - 4));
+  if (rbIndex == is.relocations.size())
     return 0;
 
-  Relocation &Rb = IS.relocations[RbIndex];
+  Relocation &rB = is.relocations[rbIndex];
 
-  const uint8_t *JmpInsnB = SecContents + Rb.offset - 1;
-  JmpInsnOpcode JO_B = getJmpInsnType(JmpInsnB - 1, JmpInsnB);
-  if (JO_B == J_UNKNOWN)
+  const uint8_t *jmpInsnB = secContents + rB.offset - 1;
+  JmpInsnOpcode jmpOpcodeB = getJmpInsnType(jmpInsnB - 1, jmpInsnB);
+  if (jmpOpcodeB == J_UNKNOWN)
     return false;
 
-  if (!isFallThruRelocation(IS, File, NextIS, Rb))
+  if (!isFallThruRelocation(is, file, nextIS, rB))
     return false;
 
   // jmpCC jumps to the fall thru block, the branch can be flipped and the
   // jmp can be deleted.
-  JmpInsnOpcode JInvert = invertJmpOpcode(JO_B);
-  if (JInvert == J_UNKNOWN)
+  JmpInsnOpcode jInvert = invertJmpOpcode(jmpOpcodeB);
+  if (jInvert == J_UNKNOWN)
     return false;
-  IS.addJumpRelocation({JInvert, (Rb.offset - 1), 4});
-  // Move R's values to Rb
-  Rb.expr = R.expr;
-  Rb.type = R.type;
-  Rb.addend = R.addend;
-  Rb.sym = R.sym;
+  is.jumpInstrMods.push_back({jInvert, (rB.offset - 1), 4});
+  // Move R's values to rB except the offset.
+  rB = {r.expr, r.type, rB.offset, r.addend, r.sym};
   // Cancel R
-  R.expr = R_NONE;
-  R.offset = 0;
-  IS.drop_back(SizeOfDirectJmpInsn);
-  IS.SpecialFiller = X86_NOP_INSTRUCTIONS;
+  r.expr = R_NONE;
+  r.offset = 0;
+  is.drop_back(sizeOfDirectJmpInsn);
+  is.nopFiller = true;
   return true;
 }
 
 // Returns target offset if the Relocation R corresponds to a jmp instruction
 // and the offset of the relocation is 1 byte wide.
-static uint64_t getTargetOffsetForJmp(InputSection &IS, InputFile *File,
-                                      Relocation &R, JmpInsnOpcode &JmpCode) {
+static uint64_t getTargetOffsetForJmp(InputSection &is, InputFile *file,
+                                      Relocation &r, JmpInsnOpcode &jmpCode) {
   const unsigned SizeOfJmpCCOpcode = 2;
 
-  if (!isRelocationForJmpInsn(R)) {
+  if (!isRelocationForJmpInsn(r)) {
     return false;
   }
 
-  unsigned JIndex = getJumpRelocationWithOffset(IS, (R.offset - 1));
-  if (JIndex != IS.JumpRelocations.size()) {
-    JmpCode = static_cast<JmpInsnOpcode>(IS.JumpRelocations[JIndex].Original);
+  unsigned JIndex = getJumpInstrModWithOffset(is, (r.offset - 1));
+  if (JIndex != is.jumpInstrMods.size()) {
+    jmpCode = static_cast<JmpInsnOpcode>(is.jumpInstrMods[JIndex].original);
   } else {
-    const uint8_t *SecContents = IS.data().data();
-    const uint8_t *JmpInsn = SecContents + R.offset - 1;
+    const uint8_t *SecContents = is.data().data();
+    const uint8_t *JmpInsn = SecContents + r.offset - 1;
     const uint8_t *JmpCCInsn =
-        (R.offset >= SizeOfJmpCCOpcode) ? (JmpInsn - 1) : nullptr;
-    JmpCode = getJmpInsnType(JmpCCInsn, JmpInsn);
+        (r.offset >= SizeOfJmpCCOpcode) ? (JmpInsn - 1) : nullptr;
+    jmpCode = getJmpInsnType(JmpCCInsn, JmpInsn);
   }
-  if (JmpCode == J_UNKNOWN) {
+  if (jmpCode == J_UNKNOWN) {
     return 0;
   }
 
-  uint64_t AddrLoc = (IS.getOutputSection())->addr + IS.outSecOff + R.offset;
+  uint64_t AddrLoc = (is.getOutputSection())->addr + is.outSecOff + r.offset;
   uint64_t TargetOffset =
-      SignExtend64(InputSectionBase::getRelocTargetVA(File, R.type, R.addend,
-                                                      AddrLoc, *R.sym, R.expr),
+      SignExtend64(InputSectionBase::getRelocTargetVA(file, r.type, r.addend,
+                                                      AddrLoc, *r.sym, r.expr),
                    (config->wordsize * 8));
 
   return TargetOffset;
@@ -340,8 +336,7 @@ static uint64_t getTargetOffsetForJmp(InputSection &IS, InputFile *File,
 
 static bool isOneByteOffsetWhenShrunk(uint64_t TargetOffset,
                                       JmpInsnOpcode JmpCode,
-                                      unsigned BytesShrunk, unsigned MaxAlign) {
-  return true;
+                                      unsigned BytesShrunk) {
   // For negative jumps, the jump target will be closer if shrinking
   // is done.
   if ((int64_t)TargetOffset < 0) {
@@ -349,31 +344,22 @@ static bool isOneByteOffsetWhenShrunk(uint64_t TargetOffset,
     TargetOffset += (JmpCode == J_JMP_32) ? 3 : 4;
   }
 
-  if (MaxAlign > 0) {
-    if ((int64_t)TargetOffset < 0) {
-      TargetOffset -= (MaxAlign - 1);
-    } else {
-      TargetOffset += (MaxAlign - 1);
-    }
-  }
-
   return ((int64_t)TargetOffset == llvm::SignExtend64(TargetOffset, 8));
 }
 
-static bool isOneByteOffset(uint64_t TargetOffset, unsigned BytesGrown,
-                            unsigned MaxAlign) {
+static bool isOneByteOffset(uint64_t TargetOffset, unsigned BytesGrown) {
   // For negative jumps, the jump target is further.
-  if ((int64_t)TargetOffset < 0) {
+  if ((int64_t)TargetOffset < 0)
     TargetOffset -= BytesGrown;
-  }
+
   return ((int64_t)TargetOffset == llvm::SignExtend64(TargetOffset, 8));
 }
 
 static void shrinkJmpWithRelocation(InputSection &IS, JmpInsnOpcode JmpCode,
                                     Relocation &R, unsigned &BytesShrunk,
                                     bool DoShrinkJmp = true) {
-  // Check if there is a Jump Relocation against this offset.
-  unsigned JIndex = getJumpRelocationWithOffset(IS, (R.offset - 1));
+  // Check if there is a JumpInstrMod against this offset.
+  unsigned JIndex = getJumpInstrModWithOffset(IS, (R.offset - 1));
 
   if (DoShrinkJmp && JmpCode != J_JMP_32)
     BytesShrunk += 1;
@@ -382,14 +368,14 @@ static void shrinkJmpWithRelocation(InputSection &IS, JmpInsnOpcode JmpCode,
   R.offset -= BytesShrunk;
   unsigned NewJmpSize = DoShrinkJmp ? 1 : 4;
 
-  if (JIndex < IS.JumpRelocations.size()) {
-    JumpRelocation &J = IS.JumpRelocations[JIndex];
-    assert((!DoShrinkJmp || J.Size == 4) && "Not the right size of jump.");
-    J.Offset = R.offset - 1;
+  if (JIndex < IS.jumpInstrMods.size()) {
+    JumpInstrMod &J = IS.jumpInstrMods[JIndex];
+    assert((!DoShrinkJmp || J.size == 4) && "Not the right size of jump.");
+    J.offset = R.offset - 1;
     if (DoShrinkJmp)
-      J.Size = NewJmpSize;
+      J.size = NewJmpSize;
   } else {
-    IS.addJumpRelocation({JmpCode, R.offset - 1, NewJmpSize});
+    IS.jumpInstrMods.push_back({JmpCode, R.offset - 1, NewJmpSize});
   }
 
   if (DoShrinkJmp) {
@@ -400,8 +386,7 @@ static void shrinkJmpWithRelocation(InputSection &IS, JmpInsnOpcode JmpCode,
   }
 }
 
-unsigned X86_64::shrinkJmpInsn(InputSection &IS, InputFile *File,
-                               unsigned MaxAlign) const {
+unsigned X86_64::shrinkJmpInsn(InputSection &IS, InputFile *File) const {
   const unsigned SizeOfDirectShortJmpInsn = 2;
   const unsigned SizeOfDirectNearJmpInsn = 5;
   const unsigned SizeOfJmpCCInsn = 6;
@@ -437,10 +422,9 @@ unsigned X86_64::shrinkJmpInsn(InputSection &IS, InputFile *File,
   unsigned BytesShrunk = 0;
 
   if (!DirectJmp) {
-    if (!IsShortJmp && isOneByteOffsetWhenShrunk(TargetOffset, JmpCode,
-                                                 BytesShrunk, MaxAlign)) {
+    if (!IsShortJmp &&
+        isOneByteOffsetWhenShrunk(TargetOffset, JmpCode, BytesShrunk))
       shrinkJmpWithRelocation(IS, JmpCode, R, BytesShrunk);
-    }
   } else {
     // For Direct Jmps, the previous insn might be a jmpcc that can be
     // shrinked.  Check that also.
@@ -454,15 +438,12 @@ unsigned X86_64::shrinkJmpInsn(InputSection &IS, InputFile *File,
         uint64_t TargetOffset_B =
             getTargetOffsetForJmp(IS, File, Rb, JmpCode_B);
         if (JmpCode_B != J_UNKNOWN && JmpCode_B != J_JMP_32 &&
-            isOneByteOffsetWhenShrunk(TargetOffset_B, JmpCode, BytesShrunk,
-                                      MaxAlign)) {
+            isOneByteOffsetWhenShrunk(TargetOffset_B, JmpCode, BytesShrunk))
           shrinkJmpWithRelocation(IS, JmpCode_B, Rb, BytesShrunk);
-        }
       }
     }
-    bool CanShrinkR =
-        !IsShortJmp &&
-        isOneByteOffsetWhenShrunk(TargetOffset, JmpCode, BytesShrunk, MaxAlign);
+    bool CanShrinkR = !IsShortJmp && isOneByteOffsetWhenShrunk(
+                                         TargetOffset, JmpCode, BytesShrunk);
     shrinkJmpWithRelocation(IS, JmpCode, R, BytesShrunk, CanShrinkR);
   }
 
@@ -475,10 +456,10 @@ unsigned X86_64::shrinkJmpInsn(InputSection &IS, InputFile *File,
 static void growJmpWithRelocation(InputSection &IS, JmpInsnOpcode JmpCode,
                                   Relocation &R, unsigned &BytesGrown,
                                   bool DoGrowJmp = true) {
-  // Check if there is a Jump Relocation against this offset.
-  unsigned JIndex = getJumpRelocationWithOffset(IS, (R.offset - 1));
+  // Check if there is a Jump Instruction Mod against this offset.
+  unsigned JIndex = getJumpInstrModWithOffset(IS, (R.offset - 1));
 
-  if (JIndex == IS.JumpRelocations.size()) {
+  if (JIndex == IS.jumpInstrMods.size()) {
     error("Jump relocation does not exist!");
     return;
   }
@@ -489,12 +470,12 @@ static void growJmpWithRelocation(InputSection &IS, JmpInsnOpcode JmpCode,
   // Update R.offset
   R.offset += BytesGrown;
 
-  JumpRelocation &J = IS.JumpRelocations[JIndex];
-  assert((!DoGrowJmp || J.Size == 1) && "Not the right size of jump.");
-  J.Offset = R.offset - 1;
+  JumpInstrMod &J = IS.jumpInstrMods[JIndex];
+  assert((!DoGrowJmp || J.size == 1) && "Not the right size of jump.");
+  J.offset = R.offset - 1;
   if (DoGrowJmp) {
     // Growing Jmp corresponding to relocation R, adjust type and addend.
-    J.Size = 4;
+    J.size = 4;
     R.type = R_X86_64_PC32;
     // assert(R.addend == -1 && "Addend must be -1 to grow.");
     R.addend -= 3;
@@ -502,8 +483,7 @@ static void growJmpWithRelocation(InputSection &IS, JmpInsnOpcode JmpCode,
   }
 }
 
-unsigned X86_64::growJmpInsn(InputSection &IS, InputFile *File,
-                             unsigned MaxAlign) const {
+unsigned X86_64::growJmpInsn(InputSection &IS, InputFile *File) const {
   const unsigned SizeOfJmpCCInsn = 2;
   const unsigned SizeOfDirectNearJmpInsn = 5;
   const unsigned SizeOfDirectShortJmpInsn = 2;
@@ -542,7 +522,7 @@ unsigned X86_64::growJmpInsn(InputSection &IS, InputFile *File,
   unsigned BytesGrown = 0;
   if (!DirectJmp) {
     // Grow JmpInsn.
-    if (IsShortJmp && !isOneByteOffset(TargetOffset, BytesGrown, MaxAlign)) {
+    if (IsShortJmp && !isOneByteOffset(TargetOffset, BytesGrown)) {
       growJmpWithRelocation(IS, JmpCode, R, BytesGrown);
     }
   } else {
@@ -558,13 +538,12 @@ unsigned X86_64::growJmpInsn(InputSection &IS, InputFile *File,
         uint64_t TargetOffset_B =
             getTargetOffsetForJmp(IS, File, Rb, JmpCode_B);
         if (JmpCode_B != J_UNKNOWN && JmpCode_B != J_JMP_32 &&
-            !isOneByteOffset(TargetOffset_B, BytesGrown, MaxAlign)) {
+            !isOneByteOffset(TargetOffset_B, BytesGrown)) {
           growJmpWithRelocation(IS, JmpCode_B, Rb, BytesGrown);
         }
       }
     }
-    bool ShouldGrowR =
-        IsShortJmp && !isOneByteOffset(TargetOffset, BytesGrown, MaxAlign);
+    bool ShouldGrowR = IsShortJmp && !isOneByteOffset(TargetOffset, BytesGrown);
     growJmpWithRelocation(IS, JmpCode, R, BytesGrown, ShouldGrowR);
   }
 
@@ -678,8 +657,9 @@ RelType X86_64::getDynRel(RelType type) const {
   return R_X86_64_NONE;
 }
 
-void X86_64::relaxTlsGdToLe(uint8_t *loc, RelType type, uint64_t val) const {
-  if (type == R_X86_64_TLSGD) {
+void X86_64::relaxTlsGdToLe(uint8_t *loc, const Relocation &rel,
+                            uint64_t val) const {
+  if (rel.type == R_X86_64_TLSGD) {
     // Convert
     //   .byte 0x66
     //   leaq x@tlsgd(%rip), %rdi
@@ -702,7 +682,7 @@ void X86_64::relaxTlsGdToLe(uint8_t *loc, RelType type, uint64_t val) const {
     //   lea x@tlsgd(%rip), %rax
     //   call *(%rax)
     // to the following two instructions.
-    assert(type == R_X86_64_GOTPC32_TLSDESC);
+    assert(rel.type == R_X86_64_GOTPC32_TLSDESC);
     if (memcmp(loc - 3, "\x48\x8d\x05", 3)) {
       error(getErrorLocation(loc - 3) + "R_X86_64_GOTPC32_TLSDESC must be used "
                                         "in callq *x@tlsdesc(%rip), %rax");
@@ -718,8 +698,9 @@ void X86_64::relaxTlsGdToLe(uint8_t *loc, RelType type, uint64_t val) const {
   }
 }
 
-void X86_64::relaxTlsGdToIe(uint8_t *loc, RelType type, uint64_t val) const {
-  if (type == R_X86_64_TLSGD) {
+void X86_64::relaxTlsGdToIe(uint8_t *loc, const Relocation &rel,
+                            uint64_t val) const {
+  if (rel.type == R_X86_64_TLSGD) {
     // Convert
     //   .byte 0x66
     //   leaq x@tlsgd(%rip), %rdi
@@ -742,7 +723,7 @@ void X86_64::relaxTlsGdToIe(uint8_t *loc, RelType type, uint64_t val) const {
     //   lea x@tlsgd(%rip), %rax
     //   call *(%rax)
     // to the following two instructions.
-    assert(type == R_X86_64_GOTPC32_TLSDESC);
+    assert(rel.type == R_X86_64_GOTPC32_TLSDESC);
     if (memcmp(loc - 3, "\x48\x8d\x05", 3)) {
       error(getErrorLocation(loc - 3) + "R_X86_64_GOTPC32_TLSDESC must be used "
                                         "in callq *x@tlsdesc(%rip), %rax");
@@ -759,7 +740,8 @@ void X86_64::relaxTlsGdToIe(uint8_t *loc, RelType type, uint64_t val) const {
 
 // In some conditions, R_X86_64_GOTTPOFF relocation can be optimized to
 // R_X86_64_TPOFF32 so that it does not use GOT.
-void X86_64::relaxTlsIeToLe(uint8_t *loc, RelType type, uint64_t val) const {
+void X86_64::relaxTlsIeToLe(uint8_t *loc, const Relocation &,
+                            uint64_t val) const {
   uint8_t *inst = loc - 3;
   uint8_t reg = loc[-1] >> 3;
   uint8_t *regSlot = loc - 1;
@@ -800,12 +782,13 @@ void X86_64::relaxTlsIeToLe(uint8_t *loc, RelType type, uint64_t val) const {
   write32le(loc, val + 4);
 }
 
-void X86_64::relaxTlsLdToLe(uint8_t *loc, RelType type, uint64_t val) const {
-  if (type == R_X86_64_DTPOFF64) {
+void X86_64::relaxTlsLdToLe(uint8_t *loc, const Relocation &rel,
+                            uint64_t val) const {
+  if (rel.type == R_X86_64_DTPOFF64) {
     write64le(loc, val);
     return;
   }
-  if (type == R_X86_64_DTPOFF32) {
+  if (rel.type == R_X86_64_DTPOFF32) {
     write32le(loc, val);
     return;
   }
@@ -848,110 +831,110 @@ void X86_64::relaxTlsLdToLe(uint8_t *loc, RelType type, uint64_t val) const {
         "expected R_X86_64_PLT32 or R_X86_64_GOTPCRELX after R_X86_64_TLSLD");
 }
 
-void X86_64::relocateOneJumpRelocation(uint8_t *Loc, JumpRelType Type,
-                                       unsigned Size) const {
-  switch (Type) {
+void X86_64::applyJumpInstrMod(uint8_t *loc, JumpModType type,
+                               unsigned size) const {
+  switch (type) {
   case J_JMP_32:
-    if (Size == 4)
-      *Loc = 0xe9;
+    if (size == 4)
+      *loc = 0xe9;
     else
-      *Loc = 0xeb;
+      *loc = 0xeb;
     break;
   case J_JE_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x84;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x84;
     } else
-      *Loc = 0x74;
+      *loc = 0x74;
     break;
   case J_JNE_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x85;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x85;
     } else
-      *Loc = 0x75;
+      *loc = 0x75;
     break;
   case J_JG_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x8f;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x8f;
     } else
-      *Loc = 0x7f;
+      *loc = 0x7f;
     break;
   case J_JGE_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x8d;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x8d;
     } else
-      *Loc = 0x7d;
+      *loc = 0x7d;
     break;
   case J_JB_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x82;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x82;
     } else
-      *Loc = 0x72;
+      *loc = 0x72;
     break;
   case J_JBE_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x86;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x86;
     } else
-      *Loc = 0x76;
+      *loc = 0x76;
     break;
   case J_JL_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x8c;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x8c;
     } else
-      *Loc = 0x7c;
+      *loc = 0x7c;
     break;
   case J_JLE_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x8e;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x8e;
     } else
-      *Loc = 0x7e;
+      *loc = 0x7e;
     break;
   case J_JA_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x87;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x87;
     } else
-      *Loc = 0x77;
+      *loc = 0x77;
     break;
   case J_JAE_32:
-    if (Size == 4) {
-      *(Loc - 1) = 0x0f;
-      *Loc = 0x83;
+    if (size == 4) {
+      loc[-1] = 0x0f;
+      *loc = 0x83;
     } else
-      *Loc = 0x73;
+      *loc = 0x73;
     break;
-  default:
-    error(getErrorLocation(Loc) + "unrecognized jump reloc " + Twine(Type));
+  case J_UNKNOWN:
+    llvm_unreachable("Unknown Jump Relocation");
   }
 }
 
-void X86_64::relocateOne(uint8_t *loc, RelType type, uint64_t val) const {
-  switch (type) {
+void X86_64::relocate(uint8_t *loc, const Relocation &rel, uint64_t val) const {
+  switch (rel.type) {
   case R_X86_64_8:
-    checkIntUInt(loc, val, 8, type);
+    checkIntUInt(loc, val, 8, rel);
     *loc = val;
     break;
   case R_X86_64_PC8:
-    checkInt(loc, val, 8, type);
+    checkInt(loc, val, 8, rel);
     *loc = val;
     break;
   case R_X86_64_16:
-    checkIntUInt(loc, val, 16, type);
+    checkIntUInt(loc, val, 16, rel);
     write16le(loc, val);
     break;
   case R_X86_64_PC16:
-    checkInt(loc, val, 16, type);
+    checkInt(loc, val, 16, rel);
     write16le(loc, val);
     break;
   case R_X86_64_32:
-    checkUInt(loc, val, 32, type);
+    checkUInt(loc, val, 32, rel);
     write32le(loc, val);
     break;
   case R_X86_64_32S:
@@ -969,7 +952,7 @@ void X86_64::relocateOne(uint8_t *loc, RelType type, uint64_t val) const {
   case R_X86_64_TLSLD:
   case R_X86_64_DTPOFF32:
   case R_X86_64_SIZE32:
-    checkInt(loc, val, 32, type);
+    checkInt(loc, val, 32, rel);
     write32le(loc, val);
     break;
   case R_X86_64_64:
@@ -1080,7 +1063,7 @@ static void relaxGotNoPic(uint8_t *loc, uint64_t val, uint8_t op,
   write32le(loc, val);
 }
 
-void X86_64::relaxGot(uint8_t *loc, RelType type, uint64_t val) const {
+void X86_64::relaxGot(uint8_t *loc, const Relocation &, uint64_t val) const {
   const uint8_t op = loc[-2];
   const uint8_t modRm = loc[-1];
 

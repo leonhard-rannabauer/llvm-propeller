@@ -99,10 +99,18 @@ LLVM_SOURCE := $(shell find $(LLVM_PROJECT)/llvm \
                    -o -iname "*.h" -o -iname "*.td" ')' -print)
 
 ifeq ($(J_NUMBER),)
-J_NUMBER := $(shell grep -Ee "^core id" /proc/cpuinfo | wc -l)
-J_NUMBER := $(shell if [[ "$(J_NUMBER)" -lt "16" ]] ; then \
-                        echo $$(($(J_NUMBER) / 8 * 7)) ; \
-                    else echo $$(($(J_NUMBER) - 5)); fi)
+CORES := $(shell grep ^cpu\\scores /proc/cpuinfo | uniq |  awk '{print $$4}')
+THREADS  := $(shell grep -Ee "^core id" /proc/cpuinfo | wc -l)
+THREAD_PER_CORE := $(shell echo $$(($(THREADS) / $(CORES))))
+# leave some cores on the machine for other jobs.
+USED_CORES := $(shell \
+	if [[ "$(CORES)" -lt "3" ]] ; then \
+	  echo 1 ; \
+	elif [[ "$(CORES)" -lt "9" ]] ; then \
+	  echo $$(($(CORES) * 3 / 4)) ; \
+	else echo $$(($(CORES) * 7 / 8)); \
+	fi )
+J_NUMBER := $(shell echo $$(( $(USED_CORES) * $(THREAD_PER_CORE))))
 endif
 
 comma              := ,

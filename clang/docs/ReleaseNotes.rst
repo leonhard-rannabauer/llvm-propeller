@@ -46,11 +46,6 @@ sections with improvements to Clang's support for those languages.
 Major New Features
 ------------------
 
-- clang used to run the actual compilation in a subprocess ("clang -cc1").
-  Now compilations are done in-process by default. ``-fno-integrated-cc1``
-  restores the former behavior. The ``-v`` and ``-###`` flags will print
-  "(in-process)" when compilations are done in-process.
-
 - ...
 
 Improvements to Clang's diagnostics
@@ -65,6 +60,10 @@ Non-comprehensive list of changes in this release
 New Compiler Flags
 ------------------
 
+
+- -fstack-clash-protection will provide a protection against the stack clash
+  attack for x86 architecture through automatic probing of each page of
+  allocated stack.
 
 Deprecated Compiler Flags
 -------------------------
@@ -104,6 +103,43 @@ C11 Feature Support
 C++ Language Changes in Clang
 -----------------------------
 
+- Clang now implements a restriction on giving non-C-compatible anonymous
+  structs a typedef name for linkage purposes, as described in C++ committee
+  paper `P1766R1 <http://wg21.link/p1766r1>`. This paper was adopted by the
+  C++ committee as a Defect Report resolution, so it is applied retroactively
+  to all C++ standard versions. This affects code such as:
+
+  .. code-block:: c++
+
+    typedef struct {
+      int f() { return 0; }
+    } S;
+
+  Previous versions of Clang rejected some constructs of this form
+  (specifically, where the linkage of the type happened to be computed
+  before the parser reached the typedef name); those cases are still rejected
+  in Clang 11.  In addition, cases that previous versions of Clang did not
+  reject now produce an extension warning. This warning can be disabled with
+  the warning flag ``-Wno-non-c-typedef-for-linkage``.
+
+  Affected code should be updated to provide a tag name for the anonymous
+  struct:
+
+  .. code-block:: c++
+
+    struct S {
+      int f() { return 0; }
+    };
+
+  If the code is shared with a C compilation (for example, if the parts that
+  are not C-compatible are guarded with ``#ifdef __cplusplus``), the typedef
+  declaration should be retained, but a tag name should still be provided:
+
+  .. code-block:: c++
+
+    typedef struct S {
+      int f() { return 0; }
+    } S;
 
 C++1z Feature Support
 ^^^^^^^^^^^^^^^^^^^^^
@@ -157,6 +193,52 @@ AST Matchers
 clang-format
 ------------
 
+
+- Option ``IndentCaseBlocks`` has been added to support treating the block
+  following a switch case label as a scope block which gets indented itself.
+  It helps avoid having the closing bracket align with the switch statement's
+  closing bracket (when ``IndentCaseLabels`` is ``false``).
+
+- Option ``ObjCBreakBeforeNestedBlockParam`` has been added to optionally apply
+  linebreaks for function arguments declarations before nested blocks.
+
+  .. code-block:: c++
+
+    switch (fool) {                vs.     switch (fool) {
+    case 1:                                case 1: {
+      {                                      bar();
+         bar();                            } break;
+      }                                    default: {
+      break;                                 plop();
+    default:                               }
+      {                                    }
+        plop();
+      }
+    }
+
+- Option ``InsertTrailingCommas`` can be set to ``TCS_Wrapped`` to insert
+  trailing commas in container literals (arrays and objects) that wrap across
+  multiple lines. It is currently only available for JavaScript and disabled by
+  default (``TCS_None``).
+
+- Option ``BraceWrapping.BeforeLambdaBody`` has been added to manage lambda
+  line break inside function parameter call in Allman style.
+
+  .. code-block:: c++
+
+      true:
+      connect(
+        []()
+        {
+          foo();
+          bar();
+        });
+
+      false:
+      connect([]() {
+          foo();
+          bar();
+        });
 
 libclang
 --------

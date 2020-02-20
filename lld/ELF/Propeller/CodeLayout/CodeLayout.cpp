@@ -27,15 +27,15 @@ using llvm::DenseMap;
 
 namespace lld {
 namespace propeller {
-extern uint64_t getEdgeExtTSPScore(const CFGEdge &edge, bool isEdgeForward,
-                                   uint64_t srcSinkDistance);
+extern uint64_t getEdgeExtTSPScore(const CFGEdge &edge,
+                                   int64_t srcSinkDistance);
 
 // This function iterates over the cfgs included in the Propeller profile and
 // adds them to cold and hot cfg lists. Then it appropriately performs basic
 // block reordering by calling NodeChainBuilder.doOrder() either on all cfgs (if
-// -propeller-opt=reorder-ip) or individually on every controlFlowGraph. After creating all
-// the node chains, it hands the basic block chains to a ChainClustering
-// instance for further rerodering.
+// -propeller-opt=reorder-ip) or individually on every controlFlowGraph. After
+// creating all the node chains, it hands the basic block chains to a
+// ChainClustering instance for further rerodering.
 void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
                               std::list<StringRef>::iterator hotPlaceHolder,
                               std::list<StringRef>::iterator coldPlaceHolder) {
@@ -46,7 +46,7 @@ void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
   // propeller profile.
   prop->forEachCfgRef([this](ControlFlowGraph &cfg) {
     if (cfg.isHot()) {
-      HotCFGs.push_back(&cfg);
+      hotCFGs.push_back(&cfg);
       if (propConfig.optPrintStats) {
         // Dump the number of basic blocks and hot basic blocks for every
         // function
@@ -61,39 +61,39 @@ void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
                 hotBBs);
       }
     } else
-      ColdCFGs.push_back(&cfg);
+      coldCFGs.push_back(&cfg);
   });
 
   if (propConfig.optReorderIP || propConfig.optReorderFuncs)
-    CC.reset(new CallChainClustering());
+    clustering.reset(new CallChainClustering());
   else {
     // If function ordering is disabled, we want to conform the the initial
     // ordering of functions in both the hot and the cold layout.
-    CC.reset(new NoOrdering());
+    clustering.reset(new NoOrdering());
   }
 
   if (propConfig.optReorderIP) {
     // If -propeller-opt=reorder-ip we want to run basic block reordering on all
     // the basic blocks of the hot cfgs.
-    NodeChainBuilder(HotCFGs).doOrder(CC);
+    NodeChainBuilder(hotCFGs).doOrder(clustering);
   } else if (propConfig.optReorderBlocks) {
     // Otherwise we apply reordering on every controlFlowGraph separately
-    for (ControlFlowGraph *cfg : HotCFGs)
-      NodeChainBuilder(cfg).doOrder(CC);
+    for (ControlFlowGraph *cfg : hotCFGs)
+      NodeChainBuilder(cfg).doOrder(clustering);
   } else {
     // If reordering is not desired, we create changes according to the initial
     // order in the controlFlowGraph.
-    for (ControlFlowGraph *cfg : HotCFGs)
-      CC->addChain(std::unique_ptr<NodeChain>(new NodeChain(cfg)));
+    for (ControlFlowGraph *cfg : hotCFGs)
+      clustering->addChain(std::unique_ptr<NodeChain>(new NodeChain(cfg)));
   }
 
   // The order for cold cfgs remains unchanged.
-  for (ControlFlowGraph *cfg : ColdCFGs)
-    CC->addChain(std::unique_ptr<NodeChain>(new NodeChain(cfg)));
+  for (ControlFlowGraph *cfg : coldCFGs)
+    clustering->addChain(std::unique_ptr<NodeChain>(new NodeChain(cfg)));
 
   // After building all the chains, let the chain clustering algorithm perform
   // the final reordering and populate the hot and cold cfg node orders.
-  CC->doOrder(HotOrder, ColdOrder);
+  clustering->doOrder(HotOrder, ColdOrder);
 
   // Transfter the order to the symbol list.
   for (CFGNode *n : HotOrder)
@@ -116,9 +116,9 @@ void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
 // level, and the ExtTSP score achieved for each function.
 void CodeLayout::printStats() {
 
-  DenseMap<CFGNode *, uint64_t> nodeAddressMap;
+  DenseMap<CFGNode *, int64_t> nodeAddressMap;
   llvm::StringMap<unsigned> functionPartitions;
-  uint64_t currentAddress = 0;
+  int64_t currentAddress = 0;
   ControlFlowGraph *currentCFG = nullptr;
   for (CFGNode *n : HotOrder) {
     if (currentCFG != n->controlFlowGraph) {
@@ -138,37 +138,34 @@ void CodeLayout::printStats() {
   std::map<uint64_t, uint64_t> histogram;
   llvm::StringMap<uint64_t> extTSPScoreMap;
   for (CFGNode *n : HotOrder) {
-    auto scoreEntry = extTSPScoreMap.try_emplace(n->controlFlowGraph->name, 0).first;
-    n->forEachOutEdgeRef([&nodeAddressMap, &distances, &histogram,
-                          &scoreEntry](CFGEdge &edge) {
-      if (!edge.weight || edge.isReturn())
-        return;
-      if (nodeAddressMap.find(edge.src) == nodeAddressMap.end() ||
-          nodeAddressMap.find(edge.sink) == nodeAddressMap.end()) {
-        warn("Found a hot edge whose source and sink do not show up in the "
-             "layout!");
-        return;
-      }
-      uint64_t srcOffset = nodeAddressMap[edge.src];
-      uint64_t sinkOffset = nodeAddressMap[edge.sink];
-      bool edgeForward = srcOffset + edge.src->shSize <= sinkOffset;
-      uint64_t srcSinkDistance =
-          edgeForward ? sinkOffset - srcOffset - edge.src->shSize
-                      : srcOffset - sinkOffset + edge.src->shSize;
+    auto scoreEntry =
+        extTSPScoreMap.try_emplace(n->controlFlowGraph->name, 0).first;
+    n->forEachOutEdgeRef(
+        [&nodeAddressMap, &distances, &histogram, &scoreEntry](CFGEdge &edge) {
+          if (!edge.weight || edge.isReturn())
+            return;
+          if (nodeAddressMap.find(edge.src) == nodeAddressMap.end() ||
+              nodeAddressMap.find(edge.sink) == nodeAddressMap.end()) {
+            warn("Found a hot edge whose source and sink do not show up in the "
+                 "layout!");
+            return;
+          }
+          int64_t srcOffset = nodeAddressMap[edge.src];
+          int64_t sinkOffset = nodeAddressMap[edge.sink];
+          int64_t srcSinkDistance = sinkOffset - srcOffset - edge.src->shSize;
 
-      if (edge.type == CFGEdge::EdgeType::INTRA_FUNC ||
-          edge.type == CFGEdge::EdgeType::INTRA_DYNA)
-        scoreEntry->second +=
-            getEdgeExtTSPScore(edge, edgeForward, srcSinkDistance);
+          if (edge.type == CFGEdge::EdgeType::INTRA_FUNC ||
+              edge.type == CFGEdge::EdgeType::INTRA_DYNA)
+            scoreEntry->second += getEdgeExtTSPScore(edge, srcSinkDistance);
 
-      auto res =
-          std::lower_bound(distances.begin(), distances.end(), srcSinkDistance);
-      histogram[*res] += edge.weight;
-    });
+          auto res = std::lower_bound(distances.begin(), distances.end(),
+                                      std::abs(srcSinkDistance));
+          histogram[*res] += edge.weight;
+        });
   }
 
   for (auto &elem : extTSPScoreMap)
-    fprintf(stderr, "Ext TSP Score: %s %lu\n", elem.first().str().c_str(),
+    fprintf(stderr, "Ext TSP score: %s %lu\n", elem.first().str().c_str(),
             elem.second);
   fprintf(stderr, "DISTANCE HISTOGRAM: ");
   uint64_t sumEdgeWeights = 0;

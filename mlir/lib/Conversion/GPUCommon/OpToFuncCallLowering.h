@@ -1,6 +1,6 @@
 //===- OpToFuncCallLowering.h - GPU ops lowering to custom calls *- C++ -*-===//
 //
-// Part of the MLIR Project, under the Apache License v2.0 with LLVM Exceptions.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
@@ -94,6 +94,24 @@ private:
   const std::string f32Func;
   const std::string f64Func;
 };
+
+namespace gpu {
+/// Returns a predicate to be used with addDynamicallyLegalOp. The predicate
+/// returns false for calls to the provided intrinsics and true otherwise.
+inline std::function<bool(Operation *)>
+filterIllegalLLVMIntrinsics(ArrayRef<StringRef> intrinsics, MLIRContext *ctx) {
+  SmallVector<StringRef, 4> illegalIds(intrinsics.begin(), intrinsics.end());
+  return [illegalIds](Operation *op) -> bool {
+    LLVM::CallOp callOp = dyn_cast<LLVM::CallOp>(op);
+    if (!callOp || !callOp.callee())
+      return true;
+    StringRef callee = callOp.callee().getValue();
+    return !llvm::any_of(illegalIds, [callee](StringRef intrinsic) {
+      return callee.equals(intrinsic);
+    });
+  };
+}
+} // namespace gpu
 
 } // namespace mlir
 

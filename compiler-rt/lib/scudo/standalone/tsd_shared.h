@@ -18,7 +18,9 @@ template <class Allocator, u32 MaxTSDCount> struct TSDRegistrySharedT {
   void initLinkerInitialized(Allocator *Instance) {
     Instance->initLinkerInitialized();
     CHECK_EQ(pthread_key_create(&PThreadKey, nullptr), 0); // For non-TLS
-    NumberOfTSDs = Min(Max(1U, getNumberOfCPUs()), MaxTSDCount);
+    const u32 NumberOfCPUs = getNumberOfCPUs();
+    NumberOfTSDs =
+        (NumberOfCPUs == 0) ? MaxTSDCount : Min(NumberOfCPUs, MaxTSDCount);
     TSDs = reinterpret_cast<TSD<Allocator> *>(
         map(nullptr, sizeof(TSD<Allocator>) * NumberOfTSDs, "scudo:tsd"));
     for (u32 I = 0; I < NumberOfTSDs; I++)
@@ -77,7 +79,7 @@ template <class Allocator, u32 MaxTSDCount> struct TSDRegistrySharedT {
   }
 
   void enable() {
-    for (s32 I = NumberOfTSDs - 1; I >= 0; I--)
+    for (s32 I = static_cast<s32>(NumberOfTSDs - 1); I >= 0; I--)
       TSDs[I].unlock();
     Mutex.unlock();
   }

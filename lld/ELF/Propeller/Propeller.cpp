@@ -140,7 +140,7 @@ bool Propfile::isHotSymbol(
   if (bbtt == SymbolEntry::BB_LANDING_PAD ||
       bbtt == SymbolEntry::BB_RETURN_AND_LANDING_PAD)
     return false;
-  return I0->second.find(bbIndex) != I0->second.end();
+  return I0->second.find(bbIndex.str()) != I0->second.end();
 }
 
 bool Propfile::processSymbolLine(
@@ -188,7 +188,7 @@ bool Propfile::processSymbolLine(
     reportParseError("invalid function index field");
     return false;
   }
-  // If it ends with 'r', 'l' or 'lineRef' suffix.
+  // If it ends with 'r', 'l' or 'L' suffix.
   char optionalSuffix = bbParts.second.back();
   SymbolEntry::BBTagTypeEnum bbTagType;
   StringRef ephemeralBBIndex;

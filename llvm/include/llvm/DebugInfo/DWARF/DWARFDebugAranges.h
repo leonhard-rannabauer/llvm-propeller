@@ -25,15 +25,15 @@ public:
 
 private:
   void clear();
-  void extract(DataExtractor DebugArangesData);
+  void extract(DataExtractor DebugArangesData,
+               function_ref<void(Error)> RecoverableErrorHandler);
 
   /// Call appendRange multiple times and then call construct.
   void appendRange(uint64_t CUOffset, uint64_t LowPC, uint64_t HighPC);
   void construct();
 
   struct Range {
-    explicit Range(uint64_t LowPC = -1ULL, uint64_t HighPC = -1ULL,
-                   uint64_t CUOffset = -1ULL)
+    explicit Range(uint64_t LowPC, uint64_t HighPC, uint64_t CUOffset)
       : LowPC(LowPC), Length(HighPC - LowPC), CUOffset(CUOffset) {}
 
     void setHighPC(uint64_t HighPC) {

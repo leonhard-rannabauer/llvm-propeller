@@ -27,13 +27,13 @@
 #include "llvm/LTO/Config.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Object/SymbolicFile.h"
+#include "llvm/ProfileData/BBSectionsProf.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include <algorithm>
 #include <cstddef>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -59,45 +59,10 @@ static std::unique_ptr<raw_fd_ostream> openFile(StringRef file) {
   return ret;
 }
 
-static bool getBBSectionsList(TargetOptions &Options) {
-  if (config->ltoBBSections.empty())
-    return false;
-
-  std::ifstream fin(config->ltoBBSections);
-  if (!fin.good()) {
-    errs() << "Cannot open " + config->ltoBBSections;
-    return false;
-  }
-  StringMap<SmallSet<unsigned, 4>>::iterator fi = Options.BBSectionsList.end();
-  std::string line;
-  while ((std::getline(fin, line)).good()) {
-    StringRef S(line);
-    // Lines beginning with @, # are not useful here.
-    if (S.empty() || S[0] == '@' || S[0] == '#')
-      continue;
-    if (!S.consume_front("!") || S.empty())
-      break;
-    if (S.consume_front("!")) {
-      if (fi != Options.BBSectionsList.end())
-        fi->second.insert(std::stoi(S));
-      else {
-        errs() << "Found \"!!\" without preceding \"!\"";
-        return false;
-      }
-    } else {
-      // Start a new function.
-      auto R = Options.BBSectionsList.try_emplace(S.split('/').first);
-      fi = R.first;
-      assert(R.second);
-    }
-  }
-  return true;
-}
-
 static std::string getThinLTOOutputFile(StringRef modulePath) {
-  return lto::getThinLTOOutputFile(modulePath,
-                                   config->thinLTOPrefixReplace.first,
-                                   config->thinLTOPrefixReplace.second);
+  return lto::getThinLTOOutputFile(
+      std::string(modulePath), std::string(config->thinLTOPrefixReplace.first),
+      std::string(config->thinLTOPrefixReplace.second));
 }
 
 static lto::Config createConfig() {
@@ -113,15 +78,16 @@ static lto::Config createConfig() {
   c.Options.DataSections = true;
 
   // Check if basic block sections must be used.
-  if (!config->ltoBBSections.empty()) {
-    if (config->ltoBBSections.equals("all"))
+  if (!config->ltoBasicBlockSections.empty()) {
+    if (config->ltoBasicBlockSections == "all")
       c.Options.BBSections = BasicBlockSection::All;
-    else if (config->ltoBBSections.equals("labels"))
+    else if (config->ltoBasicBlockSections == "labels")
       c.Options.BBSections = BasicBlockSection::Labels;
-    else if (config->ltoBBSections.equals("none"))
+    else if (config->ltoBasicBlockSections == "none")
       c.Options.BBSections = BasicBlockSection::None;
     else {
-      getBBSectionsList(c.Options);
+      llvm::bbsections::getBBSectionsList(config->ltoBasicBlockSections,
+                                          c.Options.BBSectionsList);
       c.Options.BBSections = BasicBlockSection::List;
     }
   }
@@ -149,21 +115,26 @@ static lto::Config createConfig() {
   c.PTO.SLPVectorization = c.OptLevel > 1;
 
   // Set up a custom pipeline if we've been asked to.
-  c.OptPipeline = config->ltoNewPmPasses;
-  c.AAPipeline = config->ltoAAPipeline;
+  c.OptPipeline = std::string(config->ltoNewPmPasses);
+  c.AAPipeline = std::string(config->ltoAAPipeline);
 
   // Set up optimization remarks if we've been asked to.
-  c.RemarksFilename = config->optRemarksFilename;
-  c.RemarksPasses = config->optRemarksPasses;
+  c.RemarksFilename = std::string(config->optRemarksFilename);
+  c.RemarksPasses = std::string(config->optRemarksPasses);
   c.RemarksWithHotness = config->optRemarksWithHotness;
-  c.RemarksFormat = config->optRemarksFormat;
+  c.RemarksFormat = std::string(config->optRemarksFormat);
 
-  c.SampleProfile = config->ltoSampleProfile;
+  c.SampleProfile = std::string(config->ltoSampleProfile);
   c.UseNewPM = config->ltoNewPassManager;
   c.DebugPassManager = config->ltoDebugPassManager;
-  c.DwoDir = config->dwoDir;
+  c.DwoDir = std::string(config->dwoDir);
 
-  c.CSIRProfile = config->ltoCSProfileFile;
+  c.HasWholeProgramVisibility = config->ltoWholeProgramVisibility;
+
+  c.TimeTraceEnabled = config->timeTraceEnabled;
+  c.TimeTraceGranularity = config->timeTraceGranularity;
+
+  c.CSIRProfile = std::string(config->ltoCSProfileFile);
   c.RunCSIRInstr = config->ltoCSProfileGenerate;
 
   if (config->emitLLVM) {
@@ -190,7 +161,8 @@ BitcodeCompiler::BitcodeCompiler() {
   if (config->thinLTOIndexOnly) {
     auto onIndexWrite = [&](StringRef s) { thinIndices.erase(s); };
     backend = lto::createWriteIndexesThinBackend(
-        config->thinLTOPrefixReplace.first, config->thinLTOPrefixReplace.second,
+        std::string(config->thinLTOPrefixReplace.first),
+        std::string(config->thinLTOPrefixReplace.second),
         config->thinLTOEmitImportsFiles, indexFile.get(), onIndexWrite);
   } else if (config->thinLTOJobs != -1U) {
     backend = lto::createInProcessThinBackend(config->thinLTOJobs);

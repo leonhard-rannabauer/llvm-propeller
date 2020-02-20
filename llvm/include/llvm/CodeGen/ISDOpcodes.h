@@ -633,6 +633,7 @@ namespace ISD {
     /// form a semi-softened interface for dealing with f16 (as an i16), which
     /// is often a storage-only type but has native conversions.
     FP16_TO_FP, FP_TO_FP16,
+    STRICT_FP16_TO_FP, STRICT_FP_TO_FP16,
 
     /// Perform various unary floating-point operations inspired by libm. For
     /// FPOWI, the result is undefined if if the integer operand doesn't fit
@@ -737,9 +738,6 @@ namespace ISD {
     /// with respect to other call instructions, but loads and stores may float
     /// past it.
     ANNOTATION_LABEL,
-
-    /// CATCHPAD - Represents a catchpad instruction.
-    CATCHPAD,
 
     /// CATCHRET - Represents a return from a catch block funclet. Used for
     /// MSVC compatible exception handling. Takes a chain operand and a
@@ -920,6 +918,11 @@ namespace ISD {
     /// for some others (e.g. PowerPC, PowerPC64) that would be compile-time
     /// known nonzero constant. The only operand here is the chain.
     GET_DYNAMIC_AREA_OFFSET,
+
+    /// VSCALE(IMM) - Returns the runtime scaling factor used to calculate the
+    /// number of elements within a scalable vector. IMM is a constant integer
+    /// multiplier that is applied to the runtime value.
+    VSCALE,
 
     /// Generic reduction nodes. These nodes represent horizontal vector
     /// reduction operations, producing a scalar result.

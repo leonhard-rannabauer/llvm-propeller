@@ -115,6 +115,10 @@ namespace {
                 cl::desc("Specifies the JITDylib to be used for any subsequent "
                          "-extra-module arguments."));
 
+  cl::list<std::string>
+    Dylibs("dlopen", cl::desc("Dynamic libraries to load before linking"),
+           cl::ZeroOrMore);
+
   // The MCJIT supports building for a target address space separate from
   // the JIT compilation process. Use a forked process and a copying
   // memory manager with IPC to execute using this functionality.
@@ -196,6 +200,11 @@ namespace {
   GenerateSoftFloatCalls("soft-float",
     cl::desc("Generate software floating point library calls"),
     cl::init(false));
+
+  cl::opt<bool> NoProcessSymbols(
+      "no-process-syms",
+      cl::desc("Do not resolve lli process symbols in JIT'd code"),
+      cl::init(false));
 
   enum class DumpKind {
     NoDump,
@@ -350,6 +359,7 @@ static void reportError(SMDiagnostic Err, const char *ProgName) {
   exit(1);
 }
 
+Error loadDylibs();
 int runOrcLazyJIT(const char *ProgName);
 void disallowOrcOptions();
 
@@ -374,6 +384,8 @@ int main(int argc, char **argv, char * const *envp) {
   // If the user doesn't want core files, disable them.
   if (DisableCoreFiles)
     sys::Process::PreventCoreFiles();
+
+  ExitOnErr(loadDylibs());
 
   if (UseJITKind == JITKind::OrcLazy)
     return runOrcLazyJIT(argv[0]);
@@ -709,7 +721,7 @@ static std::function<void(Module &)> createDebugDumper() {
           continue;
 
         if (F.hasName()) {
-          std::string Name(F.getName());
+          std::string Name(std::string(F.getName()));
           printf("%s ", Name.c_str());
         } else
           printf("<anon> ");
@@ -736,6 +748,16 @@ static std::function<void(Module &)> createDebugDumper() {
     };
   }
   llvm_unreachable("Unknown DumpKind");
+}
+
+Error loadDylibs() {
+  for (const auto &Dylib : Dylibs) {
+    std::string ErrMsg;
+    if (sys::DynamicLibrary::LoadLibraryPermanently(Dylib.c_str(), &ErrMsg))
+      return make_error<StringError>(ErrMsg, inconvertibleErrorCode());
+  }
+
+  return Error::success();
 }
 
 static void exitOnLazyCallThroughFailure() { exit(1); }
@@ -795,12 +817,16 @@ int runOrcLazyJIT(const char *ProgName) {
       });
 
   orc::MangleAndInterner Mangle(J->getExecutionSession(), J->getDataLayout());
-  J->getMainJITDylib().addGenerator(
-      ExitOnErr(orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
-          J->getDataLayout().getGlobalPrefix(),
-          [MainName = Mangle("main")](const orc::SymbolStringPtr &Name) {
-            return Name != MainName;
-          })));
+
+  // Unless they've been explicitly disabled, make process symbols available to
+  // JIT'd code.
+  if (!NoProcessSymbols)
+    J->getMainJITDylib().addGenerator(
+        ExitOnErr(orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+            J->getDataLayout().getGlobalPrefix(),
+            [MainName = Mangle("main")](const orc::SymbolStringPtr &Name) {
+              return Name != MainName;
+            })));
 
   orc::LocalCXXRuntimeOverrides CXXRuntimeOverrides;
   ExitOnErr(CXXRuntimeOverrides.enable(J->getMainJITDylib(), Mangle));

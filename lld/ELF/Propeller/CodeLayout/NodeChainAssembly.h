@@ -37,19 +37,21 @@ public:
   NodeChain *chain;
 
   // The endpoints of the slice in the corresponding chain
-  std::list<CFGNode *>::iterator beginPosition, endPosition;
+  std::list<std::unique_ptr<CFGNodeBundle>>::iterator beginPosition,
+      endPosition;
 
   // The offsets corresponding to the two endpoints
   int64_t beginOffset, endOffset;
 
   // Constructor for building a chain slice from a given chain and the two
   // endpoints of the chain.
-  NodeChainSlice(NodeChain *c, std::list<CFGNode *>::iterator begin,
-                 std::list<CFGNode *>::iterator end)
+  NodeChainSlice(NodeChain *c,
+                 std::list<std::unique_ptr<CFGNodeBundle>>::iterator begin,
+                 std::list<std::unique_ptr<CFGNodeBundle>>::iterator end)
       : chain(c), beginPosition(begin), endPosition(end) {
 
     beginOffset = (*begin)->chainOffset;
-    if (endPosition == chain->nodes.end())
+    if (endPosition == chain->nodeBundles.end())
       endOffset = chain->size;
     else
       endOffset = (*end)->chainOffset;
@@ -58,8 +60,8 @@ public:
   // Constructor for building a chain slice from a node chain containing all of
   // its nodes.
   NodeChainSlice(NodeChain *c)
-      : chain(c), beginPosition(c->nodes.begin()), endPosition(c->nodes.end()),
-        beginOffset(0), endOffset(c->size) {}
+      : chain(c), beginPosition(c->nodeBundles.begin()),
+        endPosition(c->nodeBundles.end()), beginOffset(0), endOffset(c->size) {}
 
   // (Binary) size of this slice
   int64_t size() const { return endOffset - beginOffset; }
@@ -95,7 +97,7 @@ public:
   std::pair<NodeChain *, NodeChain *> chainPair;
 
   // The splitting position in splitchain
-  std::list<CFGNode *>::iterator slicePosition;
+  std::list<std::unique_ptr<CFGNodeBundle>>::iterator slicePosition;
 
   // The three chain slices
   std::vector<NodeChainSlice> slices;
@@ -107,14 +109,16 @@ public:
 
   // The constructor for creating a NodeChainAssembly. slicePosition must be an
   // iterator into splitChain->nodes.
-  NodeChainAssembly(NodeChain *splitChain, NodeChain *unsplitChain,
-                    std::list<CFGNode *>::iterator slicePosition,
-                    MergeOrder mOrder)
+  NodeChainAssembly(
+      NodeChain *splitChain, NodeChain *unsplitChain,
+      std::list<std::unique_ptr<CFGNodeBundle>>::iterator slicePosition,
+      MergeOrder mOrder)
       : chainPair(splitChain, unsplitChain), slicePosition(slicePosition),
         mergeOrder(mOrder) {
     // Construct the slices.
-    NodeChainSlice s1(splitChain, splitChain->nodes.begin(), slicePosition);
-    NodeChainSlice s2(splitChain, slicePosition, splitChain->nodes.end());
+    NodeChainSlice s1(splitChain, splitChain->nodeBundles.begin(),
+                      slicePosition);
+    NodeChainSlice s2(splitChain, slicePosition, splitChain->nodeBundles.end());
     NodeChainSlice u(unsplitChain);
 
     switch (mergeOrder) {
@@ -134,13 +138,9 @@ public:
       assert("Invalid MergeOrder!" && false);
     }
 
-    splits = slicePosition != splitChain->nodes.begin();
-    splitsAtFunctionTransition =
-        splits && ((*std::prev(slicePosition))->controlFlowGraph !=
-                   (*slicePosition)->controlFlowGraph);
+    splits = slicePosition != splitChain->nodeBundles.begin();
     needsSplitChainRotation = (mergeOrder == S2S1U && splits) ||
                               mergeOrder == S2US1 || mergeOrder == US2S1;
-
     // Set the ExtTSP score gain as the difference between the new score after
     // merging these chains and the current scores of the two chains.
     auto assemblyScore = computeExtTSPScore();
@@ -166,7 +166,7 @@ public:
   CFGNode *getFirstNode() const {
     for (auto &slice : slices)
       if (!slice.isEmpty())
-        return *slice.beginPosition;
+        return (*slice.beginPosition)->nodes.front();
     return nullptr;
   }
 
@@ -188,7 +188,8 @@ public:
   // chains. When chainPair is equal, this helps differentiate and compare the
   // two assembly records.
   std::pair<uint8_t, size_t> assemblyStrategy() const {
-    return std::make_pair(mergeOrder, (*slicePosition)->mappedAddr);
+    return std::make_pair(mergeOrder,
+                          (*slicePosition)->delegateNode->mappedAddr);
   }
 
   inline NodeChain *splitChain() const { return chainPair.first; }

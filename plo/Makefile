@@ -119,7 +119,7 @@ PROFILES_DIR       := $(DDIR)/stage2/build/profiles
 CSPROFILES_DIR     := $(DDIR)/cspgo/build/csprofiles
 LLD_NO_OPT         := -fuse-ld=lld -Wl,-no-optimize-bb-jumps
 LLD_OPT            := -fuse-ld=lld -Wl,-optimize-bb-jumps
-FLAVORS            := stage1 nonepgo nonepgolabels pgo-labels pgo-vanilla pgo-relocs pgo-plo pgo-plo-ip pgo-plolist-cluster pgo-plolist pgo-plolist-ip pgo-plolist-2000 pgo-plolist-ip-2000 cspgo cspgo-plo pgo-labels-bolt pgo-vanilla-bolt pgo-relocs-bolt cspgo-bolt pgo-plo-noorder
+FLAVORS            := stage1 nonepgo nonepgolabels pgo-labels pgo-vanilla pgo-relocs pgo-plo pgo-plo-ip pgo-plolist-cluster pgo-plolist pgo-plolist-ip pgo-plolist-2000 pgo-plolist-ip-2000 cspgo cspgo-plo pgo-labels-bolt pgo-vanilla-bolt pgo-relocs-bolt cspgo-bolt pgo-plo-noorder pgo-split
 ALL_COMPILERS      := $(foreach F,$(FLAVORS),$(F)-compiler)
 ALL_PMU_BENCHMARKS := $(foreach F,$(FLAVORS),benchmark-pmu-$(F))
 ALL_BENCHMARKS     := $(foreach F,$(FLAVORS),benchmark-$(F))
@@ -151,7 +151,8 @@ relocs_flags               := $(call gen_linker_flags,"$(relocation_gen_opt)")
 bb_section_all_flags        = $(call gen_build_flags,"-funique-internal-linkage-names -fpropeller-optimize=$(1) -fbasicblock-sections=all","-fpropeller-optimize=$(1) -fbasicblock-sections=all -fuse-ld=lld $(lto_bb_sections_all_opt) $(other_opt) $(gc_sections_opt)")
 bb_section_list_align_flags       = $(call gen_build_flags,"-funique-internal-linkage-names -fpropeller-optimize=$(1) $(2)","-fuse-ld=lld -fpropeller-optimize=$(1) $(other_opt) $(gc_sections_opt) $(3) $(branch_align_opt)")
 bb_section_list_flags       = $(call gen_build_flags,"-funique-internal-linkage-names -fpropeller-optimize=$(1) $(2)","-fuse-ld=lld -fpropeller-optimize=$(1) $(other_opt) $(gc_sections_opt) $(3)")
-
+func_split_flags :=  $(call gen_build_flags,"-fbasicblock-sections=profile","-Wl$(comma)-z$(comma)keep-text-section-prefix")
+vanilla_split_flags := $(call gen_linker_flags,"-Wl$(comma)-z$(comma)keep-text-section-prefix")
 
 # $1 is any other cmake flags (optional)
 # $2 is llvm enabled projects
@@ -236,6 +237,10 @@ pgo-plo-noorder-compiler: pgo-plo/build/bin/clang-${CLANG_VERSION}
 	ln -sf $< $@
 	touch $@
 
+pgo-split-compiler: pgo-split/build/bin/clang-${CLANG_VERSION}
+	ln -sf $< $@
+	touch $@
+
 pgo-labels-bolt-compiler pgo-relocs-bolt-compiler: %-bolt-compiler: %/build/bin/clang-${CLANG_VERSION}-bolt
 	ln -sf $< $@
 	touch $@
@@ -257,7 +262,10 @@ pgo-labels-align/build/bin/clang-${CLANG_VERSION} pgo-relocs-align/build/bin/cla
 	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin $(bb_section_labels_align_flags),"clang;compiler-rt;lld",clang lld)
 
 pgo-vanilla/build/bin/clang-${CLANG_VERSION}: stage-pgo-vanilla.profdata
-	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin,"clang;compiler-rt;lld",clang lld)
+	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin $(vanilla_split_flags),"clang;compiler-rt;lld",clang lld)
+
+pgo-split/build/bin/clang-${CLANG_VERSION}: stage-pgo-vanilla.profdata
+	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin $(func_split_flags),"clang;compiler-rt;lld",clang lld)
 
 pgo-plo/build/bin/clang-${CLANG_VERSION}: stage-pgo-labels.profdata pgo-labels-compiler.propeller
 	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin $(call bb_section_all_flags,$(DDIR)/pgo-labels-compiler.propeller),"clang;compiler-rt;lld",clang lld)
@@ -325,7 +333,7 @@ pgo-labels/build/bolt-symbol-order: pgo-labels/build/bolt-func-symbol-order pgo-
 pgo-labels/build/bolt-bb-symbol-order: pgo-labels-compiler.bolt.autolog pgo-labels/build/bin/clang-$(CLANG_VERSION)-bolt bbfilter
 	cat $< | grep -E "^hh: " | sed -e 's!hh: !!' | ./bbfilter | cut -f 2 -d" " > $@
 
-pgo-labels/build/bolt-func-symbol-order: pgo-labels-compiler.bolt.autolog pgo-labels/build/bin/clang-$(CLANG_VERSION)-bolt 
+pgo-labels/build/bolt-func-symbol-order: pgo-labels-compiler.bolt.autolog pgo-labels/build/bin/clang-$(CLANG_VERSION)-bolt
 	grep -E "^hh: " $< | sed -e 's!hh: !!' | grep -vF ".BB." | cut -f 2 -d" " > $@.hot
 	grep -E "^cc: " $< | sed -e 's!cc: !!' | grep -vF ".BB." | cut -f 2 -d" " > $@.cold
 	touch $@
@@ -425,27 +433,40 @@ $(foreach F,nonepgo nonepgolabels pgo pgo-vanilla pgo-plo pgo-plolist,$(F).size-
 
 # ######################################  sample workflow : make sample.propeller.out
 sample_bblabels.o: sample.c stage1-compiler
-	./stage1-compiler -c -O2 -fpropeller-label $< -o $@
+	./stage1-compiler -c -O2 -fbasicblock-sections=labels $< -o $@
 	@[[ -n `readelf -Ws $@ | grep -F '.BB.'` ]] \
 		|| { echo "No.BB.symbols found in $@, error" ; exit 1; }
 
 sample.baseline.out: sample_bblabels.o stage1-compiler
-	./stage1-compiler -fpropeller-label -fuse-ld=lld -Wl,-O2 -o $@ $<
+	./stage1-compiler -fuse-ld=lld -Wl,-O2 -o $@ $<
 	@[[ -n `readelf -Ws $@ | grep -F '.BB.'` ]] \
 		|| { echo "No.BB.symbols found in $@, error" ; exit 1; }
 
 sample.baseline.perfdata: sample.baseline.out
 	perf record -o $@ -e "cycles:u" -j any,u -- ./$<
 
+sample.inst.out: sample.c stage1-compiler 
+	./stage1-compiler -g -O2 -fprofile-instr-generate=default.profraw $< -o $@
+
+sample.inst.profdata: sample.inst.out
+	./sample.inst.out && \
+	$(STAGE1_BIN)/llvm-profdata merge -output=$@ default.profraw
+
+sample.goal.o: sample.c sample.inst.profdata stage1-compiler
+	./stage1-compiler -O2 -fprofile-instr-use=sample.inst.profdata -fbasicblock-sections=profile -c $< -o $@ 
+
+sample.goal.out: sample.goal.o stage1-compiler
+	./stage1-compiler -fuse-ld=lld -O2 -fprofile-instr-use=sample.inst.profdata -fbasicblock-sections=profile -Wl,-z,keep-text-section-prefix $< -o $@ 
+
 sample.baseline.propeller: sample.baseline.perfdata sample.baseline.out $(CREATE_LLVM_PROF)
-	$(CREATE_LLVM_PROF) --profile=$< --out=$@ --format=propeller --binary=$(word 2,$^) --logtostderr ; \
+	$(CREATE_LLVM_PROF) --profile=$< --out=$@ --sym_order_out=order.txt --format=propeller --binary=$(word 2,$^) --logtostderr ; \
 		sed -i '1d' $@
 
 sample_bb.o: sample.c sample.baseline.propeller stage1-compiler
 	./stage1-compiler -c -O2 -fpropeller-optimize=$(word 2,$^) $< -o $@
 
 sample.propeller.out: sample_bb.o sample.baseline.propeller stage1-compiler
-	./stage1-compiler -o $@ -fuse-ld=lld -fpropeller-optimize=$(word 2,$^) -Wl,-propeller-keep-named-symbols -Wl,-propeller-print-stats $< -Wl,-propeller-dump-cfg=@; \
+	./stage1-compiler -o $@ -fuse-ld=lld -Wl,--symbol-ordering-file=order.txt -Wl,-optimize-bb-jumps $<
 
 # ######################################  sample workflow (thinlto flavor) : make sample.propeller.lto.out
 sample_bblabels.lto.o: sample.c stage1-compiler

@@ -318,7 +318,7 @@ codegen::RegisterCodeGenFlags::RegisterCodeGenFlags() {
   static cl::opt<std::string> BBSections(
       "basicblock-sections",
       cl::desc("Emit basic blocks into separate sections"),
-      cl::value_desc("all | <function list (file)> | labels | none"),
+      cl::value_desc("all | <function list (file)> | labels | profile | none"),
       cl::init("none"));
   CGBINDOPT(BBSections);
 
@@ -402,6 +402,9 @@ codegen::getBBSectionsMode(llvm::TargetOptions &Options) {
     return BasicBlockSection::Labels;
   else if (getBBSections() == "none")
     return BasicBlockSection::None;
+  else if (getBBSections() == "profile") {
+    return BasicBlockSection::Profile;
+  }
   else {
     ErrorOr<std::unique_ptr<MemoryBuffer>> MBOrErr =
         MemoryBuffer::getFile(getBBSections());

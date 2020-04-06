@@ -19,7 +19,8 @@ int compute_flag(int i)
         return 0;
 }
 
-int sample1_func();
+__attribute__((noinline))
+int sample1_func() { return 0x77; };
 
 int main(void)
 {
@@ -40,5 +41,5 @@ int main(void)
 		}
 		  
         }
-        return goose();
+        return 0;
 }

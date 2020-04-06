@@ -790,10 +790,14 @@ MCSection *TargetLoweringObjectFileELF::getSectionForMachineBasicBlock(
 
 MCSection *TargetLoweringObjectFileELF::getNamedSectionForMachineBasicBlock(
     const Function &F, const MachineBasicBlock &MBB, const TargetMachine &TM,
-    const char *Suffix) const {
+    const char *Suffix, const char* Prefix) const {
   SmallString<128> Name;
-  Name = (static_cast<MCSectionELF *>(MBB.getParent()->getSection()))
-             ->getSectionName();
+  if (Prefix == nullptr) {
+    Name = (static_cast<MCSectionELF *>(MBB.getParent()->getSection()))
+               ->getSectionName();
+  } else {
+    Name = Prefix;
+  }
 
   // If unique section names is off, explicity add the function name to the
   // section name to make sure named sections for functions are unique

@@ -95,7 +95,7 @@ public:
 
   virtual MCSection *getNamedSectionForMachineBasicBlock(
       const Function &F, const MachineBasicBlock &MBB, const TargetMachine &TM,
-      const char *Suffix) const;
+      const char *Suffix, const char* Prefix = nullptr) const;
 
   /// Classify the specified global variable into a set of target independent
   /// categories embodied in SectionKind.

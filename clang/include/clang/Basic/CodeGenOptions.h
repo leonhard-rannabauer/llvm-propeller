@@ -125,6 +125,7 @@ public:
   // "all" :  Generate basic block sections for all basic blocks.
   // "labels": Only generate basic block symbols (labels) for all basic blocks,
   //           do not generate unique sections for basic blocks.
+  // "profile": Only generate basic block sections for hot functions. 
   // "none": Disable sections/labels for basic blocks.
   // "<filename>": Generate basic block sections for a subset of basic blocks.
   //               The functions and the bbs are specified in the file.

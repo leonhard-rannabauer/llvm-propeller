@@ -66,11 +66,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "BranchFolding.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
@@ -223,6 +226,7 @@ static bool assignSectionsAndSortBasicBlocks(
     else {
       // BB goes into the special cold section if it is not specified in the
       // cluster info map.
+      dbgs() << "Setting cold for id: " << MBB.getNumber() << "\n";
       MBB.setSectionID(MachineBasicBlock::ColdSectionID);
     }
 
@@ -277,6 +281,39 @@ static bool assignSectionsAndSortBasicBlocks(
   return true;
 }
 
+static bool getClusterInfoFromFuncProfile(MachineFunction &MF, const llvm::MachineBlockFrequencyInfo* MBFI,
+                                          const llvm::ProfileSummaryInfo* PSI, 
+                                          DenseMap<unsigned, BBClusterInfo>& FuncBBClusterInfo) {
+  FuncBBClusterInfo.clear();
+  // We don't want to touch anything which is not already identified as hot.
+  auto PrefixOrNone = MF.getFunction().getSectionPrefix();
+  if (!PrefixOrNone.hasValue() || PrefixOrNone.getValue() != ".hot") {
+    return true;
+  }
+  dbgs() << "\nFunction Name: " << MF.getFunction().getName() 
+         << "\nSection Prefix: " << PrefixOrNone.getValue() << "\n"; 
+
+  double Total = 0.0; 
+  for (MachineBasicBlock &MBB : MF) {
+    Total += MBFI->getBlockFreq(&MBB).getFrequency();
+    MBFI->printBlockFreq(dbgs(), &MBB);
+    dbgs() << "\n";
+  }
+
+  auto* Entry = &MF.front();
+  unsigned CurrentPosition = 0;  
+  for (MachineBasicBlock &MBB : MF) {
+    double RelativeFreq = MBFI->getBlockFreq(&MBB).getFrequency()/Total;
+    if (&MBB != Entry && RelativeFreq < 0.1) {
+      dbgs() << "Skipping BB Number: " << MBB.getNumber() <<  "\n"; 
+      continue;
+    }
+    FuncBBClusterInfo.try_emplace(MBB.getNumber(), BBClusterInfo{0, CurrentPosition++ });
+  }
+
+  return true;
+}
+
 bool BBSectionsPrepare::runOnMachineFunction(MachineFunction &MF) {
   auto BBSectionsType = MF.getTarget().getBBSectionsType();
   assert(BBSectionsType != BasicBlockSection::None &&
@@ -298,6 +335,20 @@ bool BBSectionsPrepare::runOnMachineFunction(MachineFunction &MF) {
   if (BBSectionsType == BasicBlockSection::List &&
       !getBBClusterInfoForFunction(MF.getName(), FuncBBClusterInfo))
     return true;
+
+  if (BBSectionsType == BasicBlockSection::Profile) {
+    auto* MBFI = &getAnalysis<MachineBlockFrequencyInfo>();
+    auto* PSI = &getAnalysis<ProfileSummaryInfoWrapperPass>().getPSI();
+    if (!PSI->hasProfileSummary()) {
+      errs() << "-fbasicblock-sections=profile requires profile information.";
+      return false;
+    }
+    if (!getClusterInfoFromFuncProfile(MF, MBFI, PSI, FuncBBClusterInfo)) {
+      return true;
+    }
+  }
+  
+   
   MF.setBBSectionsType(BBSectionsType);
   MF.createBBLabels();
   assignSectionsAndSortBasicBlocks(MF, FuncBBClusterInfo);
@@ -402,6 +453,8 @@ bool BBSectionsPrepare::doInitialization(Module &M) {
 void BBSectionsPrepare::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesAll();
   AU.addRequired<MachineModuleInfoWrapperPass>();
+  AU.addRequired<MachineBlockFrequencyInfo>();
+  AU.addRequired<ProfileSummaryInfoWrapperPass>();
 }
 
 MachineFunctionPass *

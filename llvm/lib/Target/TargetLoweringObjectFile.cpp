@@ -313,7 +313,7 @@ MCSection *TargetLoweringObjectFile::getSectionForMachineBasicBlock(
 
 MCSection *TargetLoweringObjectFile::getNamedSectionForMachineBasicBlock(
     const Function &F, const MachineBasicBlock &MBB, const TargetMachine &TM,
-    const char *Suffix) const {
+    const char *Suffix, const char *Prefix) const {
   return nullptr;
 }
 

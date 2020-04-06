@@ -3095,7 +3095,7 @@ void AsmPrinter::emitBasicBlockStart(const MachineBasicBlock &MBB) {
         // Create the cold section here.
         OutStreamer->SwitchSection(
             getObjFileLowering().getNamedSectionForMachineBasicBlock(
-                MF->getFunction(), MBB, TM, ".unlikely"));
+                MF->getFunction(), MBB, TM, "", ".text.unlikely"));
       } else
         OutStreamer->SwitchSection(
             getObjFileLowering().getSectionForMachineBasicBlock(

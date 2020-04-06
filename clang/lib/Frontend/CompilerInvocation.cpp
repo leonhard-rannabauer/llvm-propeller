@@ -957,7 +957,8 @@ static bool ParseCodeGenArgs(CodeGenOptions &Opts, ArgList &Args, InputKind IK,
   Opts.BBSections =
       std::string(Args.getLastArgValue(OPT_fbasicblock_sections_EQ, "none"));
   if (Opts.BBSections != "all" && Opts.BBSections != "labels" &&
-      Opts.BBSections != "none" && !llvm::sys::fs::exists(Opts.BBSections)) {
+      Opts.BBSections != "none" && Opts.BBSections != "profile" &&
+      !llvm::sys::fs::exists(Opts.BBSections)) {
     Diags.Report(diag::err_drv_invalid_value)
         << Args.getLastArg(OPT_fbasicblock_sections_EQ)->getAsString(Args)
         << Opts.BBSections;

@@ -488,6 +488,7 @@ static void initTargetOptions(llvm::TargetOptions &Options,
           .Case("all", llvm::BasicBlockSection::All)
           .Case("labels", llvm::BasicBlockSection::Labels)
           .Case("none", llvm::BasicBlockSection::None)
+          .Case("profile", llvm::BasicBlockSection::Profile)
           .Default(llvm::BasicBlockSection::List);
 
   if (Options.BBSections == llvm::BasicBlockSection::List) {

@@ -72,7 +72,7 @@ public:
 
   MCSection *getNamedSectionForMachineBasicBlock(
       const Function &F, const MachineBasicBlock &MBB, const TargetMachine &TM,
-      const char *Suffix) const override;
+      const char *Suffix, const char* Prefix = nullptr) const override;
 
   bool shouldPutJumpTableInFunctionSection(bool UsesLabelDifference,
                                            const Function &F) const override;

@@ -49,7 +49,7 @@ check_environment: paths.mk
 	echo "clang version is: ${CLANG_VERSION}" > $@
 
 CREATE_LLVM_PROF=${CREATE_LLVM_PROF_DIR}/create_llvm_prof
-ITERATIONS ?= 5
+ITERATIONS ?= 10
 GITHASH := $(shell git rev-parse HEAD)
 $(shell git diff > gitdiff)
 DIFFHASH := $(shell cat gitdiff | sha1sum | awk '{print $$1}')
@@ -142,6 +142,7 @@ split_funcs_only           := -Wl,-propeller-opt=no-reorder-blocks -Wl,-propelle
 lto_bb_sections_all_opt    := -Wl,--lto-basicblock-sections=all
 branch_align_opt           := -Wl,-mllvm,-x86-branches-within-32B-boundaries
 print_after_flag           := -Wl,-mllvm,-print-after-all
+bbsplit_linker_opt 	   := -Wl,--lto-basicblock-sections=profile -Wl,-z,keep-text-section-prefix
 
 # Use "_flags" suffix to name cmake options, e.g., options that are wrapped by "-DCMAKE_XXX".
 bb_section_none_flags      := $(call gen_build_flags,"-funique-internal-linkage-names","${LLD_NO_OPT}")
@@ -151,8 +152,7 @@ relocs_flags               := $(call gen_linker_flags,"$(relocation_gen_opt)")
 bb_section_all_flags        = $(call gen_build_flags,"-funique-internal-linkage-names -fpropeller-optimize=$(1) -fbasicblock-sections=all","-fpropeller-optimize=$(1) -fbasicblock-sections=all -fuse-ld=lld $(lto_bb_sections_all_opt) $(other_opt) $(gc_sections_opt)")
 bb_section_list_align_flags       = $(call gen_build_flags,"-funique-internal-linkage-names -fpropeller-optimize=$(1) $(2)","-fuse-ld=lld -fpropeller-optimize=$(1) $(other_opt) $(gc_sections_opt) $(3) $(branch_align_opt)")
 bb_section_list_flags       = $(call gen_build_flags,"-funique-internal-linkage-names -fpropeller-optimize=$(1) $(2)","-fuse-ld=lld -fpropeller-optimize=$(1) $(other_opt) $(gc_sections_opt) $(3)")
-bb_split_flags :=  $(call gen_build_flags,"-fbasicblock-sections=profile","-Wl$(comma)-z$(comma)keep-text-section-prefix")
-vanilla_split_flags := $(call gen_linker_flags,"-Wl$(comma)-z$(comma)keep-text-section-prefix")
+bbsplit_flags :=  $(call gen_build_flags,"-fbasicblock-sections=profile","${LLD_OPT} $(bbsplit_linker_opt)")
 
 # $1 is any other cmake flags (optional)
 # $2 is llvm enabled projects
@@ -214,7 +214,7 @@ stage-pgo-labels/build/bin/clang-${CLANG_VERSION} stage-pgo-relocs/build/bin/cla
 stage-pgo-vanilla/build/bin/clang-${CLANG_VERSION}: | stage1-compiler
 	$(call build_compiler,-DLLVM_BUILD_INSTRUMENTED=IR,"clang;compiler-rt;lld",all)
 
-stage-pgo-labels-compiler stage-pgo-vanilla-compiler stage-pgo-relocs-compiler stage1-stage-cspgo-compiler nonepgo-compiler nonepgolabels-compiler pgo-labels-compiler pgo-vanilla-compiler pgo-vanilla-split-compiler pgo-relocs-compiler cspgo-compiler pgo-plo-compiler pgo-plolist-compiler: %-compiler: %/build/bin/clang-${CLANG_VERSION} | check_environment
+stage-pgo-labels-compiler stage-pgo-vanilla-compiler stage-pgo-relocs-compiler stage1-stage-cspgo-compiler nonepgo-compiler nonepgolabels-compiler pgo-labels-compiler pgo-vanilla-compiler pgo-bbsplit-compiler pgo-relocs-compiler cspgo-compiler pgo-plo-compiler pgo-plolist-compiler: %-compiler: %/build/bin/clang-${CLANG_VERSION} | check_environment
 	ln -sf $< $@
 	touch $@
 
@@ -258,10 +258,10 @@ pgo-labels-align/build/bin/clang-${CLANG_VERSION} pgo-relocs-align/build/bin/cla
 	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin $(bb_section_labels_align_flags),"clang;compiler-rt;lld",clang lld)
 
 pgo-vanilla/build/bin/clang-${CLANG_VERSION}: stage-pgo-vanilla.profdata
-	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin,"clang;compiler-rt;lld",clang lld)
+	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin $(call gen_linker_flags,"-Wl$(comma)-z$(comma)keep-text-section-prefix"),"clang;compiler-rt;lld",clang lld)
 
-pgo-bbsplit/build/bin/clang-${CLANG_VERSION}: stage-pgo-vanilla.profdata
-	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin $(bb_split_flags),"clang;compiler-rt;lld",clang lld)
+pgo-bbsplit/build/bin/clang-${CLANG_VERSION}: stage-pgo-vanilla.profdata stage1-compiler
+	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin $(call bbsplit_flags),"clang;compiler-rt;lld",clang lld)
 
 pgo-plo/build/bin/clang-${CLANG_VERSION}: stage-pgo-labels.profdata pgo-labels-compiler.propeller
 	$(call build_compiler,-DLLVM_PROFDATA_FILE=$(DDIR)/$< -DLLVM_ENABLE_LTO=Thin $(call bb_section_all_flags,$(DDIR)/pgo-labels-compiler.propeller),"clang;compiler-rt;lld",clang lld)

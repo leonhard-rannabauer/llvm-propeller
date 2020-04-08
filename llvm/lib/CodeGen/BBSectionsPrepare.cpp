@@ -226,7 +226,6 @@ static bool assignSectionsAndSortBasicBlocks(
     else {
       // BB goes into the special cold section if it is not specified in the
       // cluster info map.
-      dbgs() << "Setting cold for id: " << MBB.getNumber() << "\n";
       MBB.setSectionID(MachineBasicBlock::ColdSectionID);
     }
 
@@ -290,22 +289,19 @@ static bool getClusterInfoFromFuncProfile(MachineFunction &MF, const llvm::Machi
   if (!PrefixOrNone.hasValue() || PrefixOrNone.getValue() != ".hot") {
     return true;
   }
-  dbgs() << "\nFunction Name: " << MF.getFunction().getName() 
-         << "\nSection Prefix: " << PrefixOrNone.getValue() << "\n"; 
 
   double Total = 0.0; 
   for (MachineBasicBlock &MBB : MF) {
     Total += MBFI->getBlockFreq(&MBB).getFrequency();
-    MBFI->printBlockFreq(dbgs(), &MBB);
-    dbgs() << "\n";
+    // MBFI->printBlockFreq(dbgs(), &MBB);
+    // dbgs() << "\n";
   }
 
   auto* Entry = &MF.front();
   unsigned CurrentPosition = 0;  
   for (MachineBasicBlock &MBB : MF) {
     double RelativeFreq = MBFI->getBlockFreq(&MBB).getFrequency()/Total;
-    if (&MBB != Entry && RelativeFreq < 0.1) {
-      dbgs() << "Skipping BB Number: " << MBB.getNumber() <<  "\n"; 
+    if (&MBB != Entry && RelativeFreq < 0.0001) {
       continue;
     }
     FuncBBClusterInfo.try_emplace(MBB.getNumber(), BBClusterInfo{0, CurrentPosition++ });
@@ -344,6 +340,7 @@ bool BBSectionsPrepare::runOnMachineFunction(MachineFunction &MF) {
       return false;
     }
     if (!getClusterInfoFromFuncProfile(MF, MBFI, PSI, FuncBBClusterInfo)) {
+      errs() << "could not get cluster info from profile.";
       return true;
     }
   }

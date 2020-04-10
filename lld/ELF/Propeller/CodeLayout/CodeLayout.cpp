@@ -101,7 +101,7 @@ void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
         };
         sort(hotNodes.begin(), hotNodes.end(), compareNodeAddress);
         sort(coldNodes.begin(), coldNodes.end(), compareNodeAddress);
-        if (propConfig.optReorderBlocksRandom) {
+        if (propConfig.optReorderBlocksRandom && hotNodes.size() > 1) {
           std::srand(unsigned(std::time(0)));
           std::random_shuffle(hotNodes.begin(), hotNodes.end());
         }

@@ -19,6 +19,7 @@ define i32 @main() uwtable optsize ssp personality i8* bitcast (i32 (...)* @__gx
 ; CHECK:    jmp	r.BB.main
 ; CHECK:    .cfi_endproc
 
+; CHECK:    .section        .text.main.unlikely,"ax",@progbits
 ; CHECK:  r.BB.main:                              # %try.cont
 ; CHECK:    .cfi_startproc
 ; CHECK:    .cfi_personality 3, __gxx_personality_v0
@@ -28,7 +29,7 @@ define i32 @main() uwtable optsize ssp personality i8* bitcast (i32 (...)* @__gx
 ; CHECK:    popq %rcx
 ; CHECK:    retq
 
-; CHECK:  lr.BB.main:                             # %lpad
+; CHECK:  .LBB0_2:                             # %lpad
 ; CHECK:    .cfi_def_cfa_offset 16
 ; CHECK:  .Ltmp2:
 ; CHECK:    movq %rax, %rdi

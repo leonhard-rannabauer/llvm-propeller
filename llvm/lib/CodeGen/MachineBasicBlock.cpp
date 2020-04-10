@@ -62,7 +62,9 @@ MCSymbol *MachineBasicBlock::getSymbol() const {
     MCContext &Ctx = MF->getContext();
     auto Prefix = Ctx.getAsmInfo()->getPrivateLabelPrefix();
 
-    bool BasicBlockSymbols = MF->hasBBSections() || MF->hasBBLabels();
+    // We emit a non-temporary symbol for every basic block if we have BBLabels
+    // or -- with basic block sections -- when a basic block begins a section.
+    bool BasicBlockSymbols = isBeginSection() || MF->hasBBLabels();
     auto Delimiter = BasicBlockSymbols ? "." : "_";
     assert(getNumber() >= 0 && "cannot get label for unreachable MBB");
 
@@ -548,47 +550,19 @@ void MachineBasicBlock::moveAfter(MachineBasicBlock *NewBefore) {
   getParent()->splice(++NewBefore->getIterator(), getIterator());
 }
 
-// Returns true if this basic block and the Other are in the same section.
-bool MachineBasicBlock::sameSection(const MachineBasicBlock *Other) const {
-  if (this == Other)
-    return true;
-
-  if (this->getSectionID() != Other->getSectionID())
-    return false;
-
-  return true;
-}
-
+// Returns the basic block ending the section containing this basic block.
+// Returns null if basic block sections is not enabled for this function.
+// This function has a linear time complexity.
 const MachineBasicBlock *MachineBasicBlock::getSectionEndMBB() const {
-  if (this->isEndSection())
-    return this;
-  auto I = std::next(this->getIterator());
-  const MachineFunction *MF = getParent();
-  while (I != MF->end()) {
-    const MachineBasicBlock &MBB = *I;
-    if (MBB.isEndSection())
-      return &MBB;
-    I = std::next(I);
-  }
-  llvm_unreachable("No End Basic Block for this section.");
-}
-
-// Returns true if this block begins any section.
-bool MachineBasicBlock::isBeginSection() const {
   const MachineFunction *MF = getParent();
   if (!MF->hasBBSections())
-    return false;
-  auto I = std::next(this->getReverseIterator());
-  return (I == MF->rend()) || (I->getSectionID() != getSectionID());
-}
-
-// Returns true if this block begins any section.
-bool MachineBasicBlock::isEndSection() const {
-  const MachineFunction *MF = getParent();
-  if (!MF->hasBBSections())
-    return false;
-  auto I = std::next(this->getIterator());
-  return (I == MF->end()) || (I->getSectionID() != getSectionID());
+    return nullptr;
+  // Iterate over basic blocks looking for a basic block with a different
+  // section ID.
+  auto I = getIterator();
+  while (I != MF->end() && I->getSectionID() == getSectionID())
+    ++I;
+  return I == MF->end() ? &MF->back() : &*std::prev(I);
 }
 
 void MachineBasicBlock::updateTerminator() {
@@ -1574,5 +1548,6 @@ MachineBasicBlock::livein_iterator MachineBasicBlock::livein_begin() const {
   return LiveIns.begin();
 }
 
-const unsigned MachineBasicBlock::ColdSectionID;
-const unsigned MachineBasicBlock::ExceptionSectionID;
+const MBBSectionID MBBSectionID::ColdSectionID(MBBSectionID::SectionType::Cold);
+const MBBSectionID
+    MBBSectionID::ExceptionSectionID(MBBSectionID::SectionType::Exception);

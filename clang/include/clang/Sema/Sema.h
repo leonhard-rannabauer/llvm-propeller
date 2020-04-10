@@ -25,6 +25,7 @@
 #include "clang/AST/ExprCXX.h"
 #include "clang/AST/ExprConcepts.h"
 #include "clang/AST/ExprObjC.h"
+#include "clang/AST/ExprOpenMP.h"
 #include "clang/AST/ExternalASTSource.h"
 #include "clang/AST/LocInfoType.h"
 #include "clang/AST/MangleNumberingContext.h"
@@ -57,6 +58,7 @@
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TinyPtrVector.h"
@@ -1500,9 +1502,6 @@ public:
   public:
   // Emit all deferred diagnostics.
   void emitDeferredDiags();
-  // Emit any deferred diagnostics for FD and erase them from the map in which
-  // they're stored.
-  void emitDeferredDiags(FunctionDecl *FD, bool ShowCallStack);
 
   enum TUFragmentKind {
     /// The global module fragment, between 'module;' and a module-declaration.
@@ -4899,6 +4898,25 @@ public:
   ExprResult ActOnOMPArraySectionExpr(Expr *Base, SourceLocation LBLoc,
                                       Expr *LowerBound, SourceLocation ColonLoc,
                                       Expr *Length, SourceLocation RBLoc);
+  ExprResult ActOnOMPArrayShapingExpr(Expr *Base, SourceLocation LParenLoc,
+                                      SourceLocation RParenLoc,
+                                      ArrayRef<Expr *> Dims,
+                                      ArrayRef<SourceRange> Brackets);
+
+  /// Data structure for iterator expression.
+  struct OMPIteratorData {
+    IdentifierInfo *DeclIdent = nullptr;
+    SourceLocation DeclIdentLoc;
+    ParsedType Type;
+    OMPIteratorExpr::IteratorRange Range;
+    SourceLocation AssignLoc;
+    SourceLocation ColonLoc;
+    SourceLocation SecColonLoc;
+  };
+
+  ExprResult ActOnOMPIteratorExpr(Scope *S, SourceLocation IteratorKwLoc,
+                                  SourceLocation LLoc, SourceLocation RLoc,
+                                  ArrayRef<OMPIteratorData> Data);
 
   // This struct is for use by ActOnMemberAccess to allow
   // BuildMemberReferenceExpr to be able to reinvoke ActOnMemberAccess after
@@ -6999,6 +7017,27 @@ public:
                                    bool AllowFunctionTemplates = true,
                                    bool AllowDependent = true);
 
+  enum TemplateNameIsRequiredTag { TemplateNameIsRequired };
+  /// Whether and why a template name is required in this lookup.
+  class RequiredTemplateKind {
+  public:
+    /// Template name is required if TemplateKWLoc is valid.
+    RequiredTemplateKind(SourceLocation TemplateKWLoc = SourceLocation())
+        : TemplateKW(TemplateKWLoc) {}
+    /// Template name is unconditionally required.
+    RequiredTemplateKind(TemplateNameIsRequiredTag) : TemplateKW() {}
+
+    SourceLocation getTemplateKeywordLoc() const {
+      return TemplateKW.getValueOr(SourceLocation());
+    }
+    bool hasTemplateKeyword() const { return getTemplateKeywordLoc().isValid(); }
+    bool isRequired() const { return TemplateKW != SourceLocation(); }
+    explicit operator bool() const { return isRequired(); }
+
+  private:
+    llvm::Optional<SourceLocation> TemplateKW;
+  };
+
   enum class AssumedTemplateKind {
     /// This is not assumed to be a template name.
     None,
@@ -7008,12 +7047,11 @@ public:
     /// functions (but no function templates).
     FoundFunctions,
   };
-  bool LookupTemplateName(LookupResult &R, Scope *S, CXXScopeSpec &SS,
-                          QualType ObjectType, bool EnteringContext,
-                          bool &MemberOfUnknownSpecialization,
-                          SourceLocation TemplateKWLoc = SourceLocation(),
-                          AssumedTemplateKind *ATK = nullptr,
-                          bool Disambiguation = false);
+  bool LookupTemplateName(
+      LookupResult &R, Scope *S, CXXScopeSpec &SS, QualType ObjectType,
+      bool EnteringContext, bool &MemberOfUnknownSpecialization,
+      RequiredTemplateKind RequiredTemplate = SourceLocation(),
+      AssumedTemplateKind *ATK = nullptr, bool AllowTypoCorrection = true);
 
   TemplateNameKind isTemplateName(Scope *S,
                                   CXXScopeSpec &SS,
@@ -7226,7 +7264,7 @@ public:
                                const DeclarationNameInfo &NameInfo,
                                const TemplateArgumentListInfo *TemplateArgs);
 
-  TemplateNameKind ActOnDependentTemplateName(
+  TemplateNameKind ActOnTemplateName(
       Scope *S, CXXScopeSpec &SS, SourceLocation TemplateKWLoc,
       const UnqualifiedId &Name, ParsedType ObjectType, bool EnteringContext,
       TemplateTy &Template, bool AllowInjectedClassName = false);
@@ -9821,8 +9859,7 @@ private:
     /// The associated OpenMP context selector mangling.
     std::string NameSuffix;
 
-    OMPDeclareVariantScope(OMPTraitInfo &TI)
-        : TI(&TI), NameSuffix(TI.getMangledName()) {}
+    OMPDeclareVariantScope(OMPTraitInfo &TI);
   };
 
   /// The current `omp begin/end declare variant` scopes.
@@ -9852,7 +9889,7 @@ public:
   /// specialization via the OpenMP declare variant mechanism available. If
   /// there is, return the specialized call expression, otherwise return the
   /// original \p Call.
-  ExprResult ActOnOpenMPCall(Sema &S, ExprResult Call, Scope *Scope,
+  ExprResult ActOnOpenMPCall(ExprResult Call, Scope *Scope,
                              SourceLocation LParenLoc, MultiExprArg ArgExprs,
                              SourceLocation RParenLoc, Expr *ExecConfig);
 
@@ -10548,7 +10585,7 @@ public:
       SourceLocation StartLoc, SourceLocation LParenLoc, SourceLocation EndLoc);
 
   OMPClause *ActOnOpenMPVarListClause(
-      OpenMPClauseKind Kind, ArrayRef<Expr *> Vars, Expr *TailExpr,
+      OpenMPClauseKind Kind, ArrayRef<Expr *> Vars, Expr *DepModOrTailExpr,
       const OMPVarListLocTy &Locs, SourceLocation ColonLoc,
       CXXScopeSpec &ReductionOrMapperIdScopeSpec,
       DeclarationNameInfo &ReductionOrMapperId, int ExtraModifier,
@@ -10646,10 +10683,10 @@ public:
                                      SourceLocation EndLoc);
   /// Called on well-formed 'depend' clause.
   OMPClause *
-  ActOnOpenMPDependClause(OpenMPDependClauseKind DepKind, SourceLocation DepLoc,
-                          SourceLocation ColonLoc, ArrayRef<Expr *> VarList,
-                          SourceLocation StartLoc, SourceLocation LParenLoc,
-                          SourceLocation EndLoc);
+  ActOnOpenMPDependClause(Expr *DepModifier, OpenMPDependClauseKind DepKind,
+                          SourceLocation DepLoc, SourceLocation ColonLoc,
+                          ArrayRef<Expr *> VarList, SourceLocation StartLoc,
+                          SourceLocation LParenLoc, SourceLocation EndLoc);
   /// Called on well-formed 'device' clause.
   OMPClause *ActOnOpenMPDeviceClause(OpenMPDeviceClauseModifier Modifier,
                                      Expr *Device, SourceLocation StartLoc,

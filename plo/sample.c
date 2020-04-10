@@ -22,6 +22,7 @@ int compute_flag(int i)
 __attribute__((noinline))
 int sample1_func() { return 0x77; };
 
+
 int main(void)
 {
         int i;

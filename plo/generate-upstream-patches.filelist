@@ -35,7 +35,10 @@ declare ALL_FILES=(
         clang-uif        clang/lib/Frontend/CompilerInvocation.cpp
         clang-base       clang/test/CodeGen/basicblock-sections.c
         clang-base       clang/test/CodeGen/basicblock-sections.funcnames
+	clang-base       clang/test/Driver/funique-bb-section-names.c
+	clang-base       clang/test/Driver/fbasicblock-sections.c
         clang-uif        clang/test/CodeGen/unique-internal-linkage-names.cpp
+        clang-uif        clang/test/CodeGen/unique-internal-linkage-names2.c
 	clang-uif        clang/test/Driver/funique-internal-linkage-names.c
         clang-pro        clang/test/Driver/propeller-flags.c
         clang-rws        clang/tools/driver/cc1as_main.cpp
@@ -135,41 +138,33 @@ declare ALL_FILES=(
 	lld-base         lld/test/ELF/bb-sections-pc32reloc.s
 # LLVM patch begins here.
 # Base Patch files here:
-        base_1           llvm/include/llvm/CodeGen/CommandFlags.inc
-        base_1           llvm/include/llvm/Target/TargetMachine.h
-        base_1           llvm/include/llvm/Target/TargetOptions.h
-	base_1           llvm/lib/ProfileData/CMakeLists.txt
-        base_2           llvm/include/llvm/CodeGen/AsmPrinter.h
-	base_2           llvm/include/llvm/InitializePasses.h
-        base_2           llvm/include/llvm/CodeGen/MachineBasicBlock.h
-        base_2           llvm/include/llvm/CodeGen/MachineFunction.h
-        base_2           llvm/include/llvm/CodeGen/Passes.h
-        base_2           llvm/include/llvm/CodeGen/TargetLoweringObjectFileImpl.h
-        base_2           llvm/include/llvm/Target/TargetLoweringObjectFile.h
-        base_2           llvm/lib/CodeGen/AsmPrinter/AsmPrinter.cpp
-	base_2           llvm/lib/CodeGen/BBSectionsPrepare.cpp
-	base_2           llvm/lib/CodeGen/CodeGen.cpp
-	base_2           llvm/lib/CodeGen/CMakeLists.txt
-        base_2           llvm/lib/CodeGen/MachineBasicBlock.cpp
-        base_2           llvm/lib/CodeGen/MachineFunction.cpp
-        base_2           llvm/lib/CodeGen/TargetLoweringObjectFileImpl.cpp
-	base_2           llvm/lib/CodeGen/TargetPassConfig.cpp
-	base_2           llvm/lib/CodeGen/MIRParser/MILexer.h
-	base_2           llvm/lib/CodeGen/MIRParser/MILexer.cpp
-	base_2           llvm/lib/CodeGen/MIRParser/MIParser.cpp
-	base_2           llvm/lib/CodeGen/MIRParser/MIRParser.cpp
-	base_2           llvm/lib/CodeGen/MIRPrinter.cpp
-        base_2           llvm/lib/Target/TargetLoweringObjectFile.cpp
-        base_2           llvm/test/CodeGen/X86/basicblock-sections.ll
-        base_2           llvm/test/CodeGen/X86/basicblock-sections-directjumps.ll
-        base_2           llvm/test/CodeGen/X86/basicblock-sections-list.ll
-        base_2           llvm/test/CodeGen/X86/basicblock-sections-listbb.ll
-        base_2           llvm/test/CodeGen/X86/basicblock-sections-labels.ll
-	base_2           llvm/test/CodeGen/X86/basicblock-sections-eh.ll
-	base_2           llvm/test/CodeGen/X86/basicblock-sections-cold.ll
-	base_2           llvm/test/CodeGen/X86/basicblock-sections-mir-print.ll
-	base_2           llvm/test/CodeGen/X86/basicblock-sections-mir-parse.mir
-	base_2           llvm/test/CodeGen/X86/basicblock-sections-clusters.ll
+        bbclusters           llvm/include/llvm/CodeGen/AsmPrinter.h
+        bbclusters           llvm/include/llvm/CodeGen/MachineBasicBlock.h
+        bbclusters           llvm/include/llvm/CodeGen/MachineFunction.h
+	bbclusters           llvm/include/llvm/CodeGen/TargetLoweringObjectFileImpl.h
+	bbclusters           llvm/include/llvm/Target/TargetLoweringObjectFile.h
+        bbclusters           llvm/lib/CodeGen/AsmPrinter/AsmPrinter.cpp
+	bbclusters           llvm/lib/CodeGen/BBSectionsPrepare.cpp
+	bbclusters           llvm/lib/CodeGen/CodeGen.cpp
+        bbclusters           llvm/lib/CodeGen/MachineBasicBlock.cpp
+        bbclusters           llvm/lib/CodeGen/MachineFunction.cpp
+	bbclusters           llvm/lib/CodeGen/MIRParser/MIParser.cpp
+	bbclusters           llvm/lib/CodeGen/MIRParser/MIRParser.cpp
+	bbclusters           llvm/lib/CodeGen/MIRPrinter.cpp
+	bbclusters           llvm/lib/CodeGen/TargetLoweringObjectFileImpl.cpp
+	bbclusters           llvm/lib/Target/TargetLoweringObjectFile.cpp
+        bbclusters           llvm/test/CodeGen/X86/basicblock-sections.ll
+        bbclusters           llvm/test/CodeGen/X86/basicblock-sections-listbb.ll
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-eh.ll
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-mir-print.ll
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-mir-parse.mir
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-clusters.ll
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-clusters-error.ll
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-clusters-eh.ll
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-clusters-branches.ll
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-cold.ll
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-directjumps.ll
+	bbclusters           llvm/test/CodeGen/X86/basicblock-sections-list.ll
 
         exception        llvm/include/llvm/CodeGen/AsmPrinter.h
         cfi              llvm/include/llvm/CodeGen/AsmPrinterHandler.h
@@ -191,7 +186,6 @@ declare ALL_FILES=(
         exception        llvm/lib/CodeGen/AsmPrinter/WasmException.cpp
         exception        llvm/lib/CodeGen/AsmPrinter/WasmException.h
         cfi              llvm/lib/CodeGen/CFIInstrInserter.cpp
-        base_1           llvm/lib/CodeGen/CodeGenPrepare.cpp
         debuginfo        llvm/lib/MC/ELFObjectWriter.cpp
         cfi              llvm/lib/MC/MCDwarf.cpp
         debuginfo        llvm/lib/MC/MCDwarf.cpp

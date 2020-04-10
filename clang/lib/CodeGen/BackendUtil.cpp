@@ -494,12 +494,11 @@ static void initTargetOptions(llvm::TargetOptions &Options,
   if (Options.BBSections == llvm::BasicBlockSection::List) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> MBOrErr =
         MemoryBuffer::getFile(CodeGenOpts.BBSections);
-    if (!MBOrErr) {
+    if (!MBOrErr)
       errs() << "Error loading basic block sections function list file: "
              << MBOrErr.getError().message() << "\n";
-    } else {
+    else
       Options.BBSectionsFuncListBuf = std::move(*MBOrErr);
-    }
   }
 
   Options.FunctionSections = CodeGenOpts.FunctionSections;
@@ -1129,6 +1128,7 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
   PTO.LoopInterleaving = CodeGenOpts.UnrollLoops;
   PTO.LoopVectorization = CodeGenOpts.VectorizeLoop;
   PTO.SLPVectorization = CodeGenOpts.VectorizeSLP;
+  PTO.CallGraphProfile = CodeGenOpts.CallGraphProfile;
   PTO.Coroutines = LangOpts.Coroutines;
 
   PassInstrumentationCallbacks PIC;
@@ -1539,6 +1539,7 @@ static void runThinLTOBackend(ModuleSummaryIndex *CombinedIndex, Module *M,
   Conf.PTO.LoopInterleaving = CGOpts.UnrollLoops;
   Conf.PTO.LoopVectorization = CGOpts.VectorizeLoop;
   Conf.PTO.SLPVectorization = CGOpts.VectorizeSLP;
+  Conf.PTO.CallGraphProfile = CGOpts.CallGraphProfile;
 
   // Context sensitive profile.
   if (CGOpts.hasProfileCSIRInstr()) {

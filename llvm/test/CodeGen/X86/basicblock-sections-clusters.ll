@@ -1,51 +1,71 @@
-; BB cluster sections.
-; Basic blocks #0 (entry) and #4 will be placed in the same section.
+; BB cluster section tests.
+;
+; Test1: Basic blocks #0 (entry) and #2 will be placed in the same section.
 ; Basic block 1 will be placed in a unique section.
-; The rest (BBs #2 and #3) end up in the cold section.
-; RUN: echo '!f' > %t
-; RUN: echo '!!0 4' >> %t
-; RUN: echo '!!1' >> %t
-; RUN: llc < %s -O0 -mtriple=x86_64-pc-linux -function-sections -basicblock-sections=%t | FileCheck %s -check-prefix=LINUX-SECTIONS
+; The rest will be placed in the cold section.
+; RUN: echo '!foo' > %t1
+; RUN: echo '!!0 2' >> %t1
+; RUN: echo '!!1' >> %t1
+; RUN: llc < %s -O0 -mtriple=x86_64-pc-linux -function-sections -basicblock-sections=%t1 | FileCheck %s -check-prefix=LINUX-SECTIONS1
+;
+; Test2: Basic blocks #1 and #3 will be placed in the same section.
+; All other BBs (including the entry block) go into the function's section.
+; RUN: echo '!foo' > %t2
+; RUN: echo '!!1 3' >> %t2
+; RUN: llc < %s -O0 -mtriple=x86_64-pc-linux -function-sections -basicblock-sections=%t2 | FileCheck %s -check-prefix=LINUX-SECTIONS2
 
-declare void @stub(i32*)
+define void @foo(i1 zeroext) {
+  %2 = alloca i8, align 1
+  %3 = zext i1 %0 to i8
+  store i8 %3, i8* %2, align 1
+  %4 = load i8, i8* %2, align 1
+  %5 = trunc i8 %4 to i1
+  br i1 %5, label %6, label %8
 
-define i32 @f(i32* %ptr, i1 %cond) {
-  entry:
-    br i1 %cond, label %left, label %right
+6:                                                ; preds = %1
+  %7 = call i32 @bar()
+  br label %10
 
-  left:                                             ; preds = %entry
-    %is_null = icmp eq i32* %ptr, null
-    br i1 %is_null, label %null, label %not_null
+8:                                                ; preds = %1
+  %9 = call i32 @baz()
+  br label %10
 
-  not_null:                                         ; preds = %left
-    %val = load i32, i32* %ptr
-    ret i32 %val
-
-  null:                                             ; preds = %left
-    call void @stub(i32* %ptr)
-    unreachable
-
-  right:                                            ; preds = %entry
-    call void @stub(i32* null)
-    unreachable
+10:                                               ; preds = %8, %6
+  ret void
 }
 
-; LINUX-SECTIONS:	.section        .text.f,"ax",@progbits
-; LINUX-SECTIONS:	f:
-; LINUX-SECTIONS:	jne     a.BB.f
-; LINUX-SECTIONS-NOT:   {{jne|je|jmp}}
-; LINUX-SECTIONS:	aara.BB.f:
-; LINUX-SECTIONS:	.section        .text.f,"ax",@progbits,unique,1
-; LINUX-SECTIONS:	a.BB.f:
-; LINUX-SECTIONS:       je      ara.BB.f
-; LINUX-SECTIONS-NEXT:  jmp     ra.BB.f
-; LINUX-SECTIONS-NOT:   {{jne|je|jmp}}
-; LINUX-SECTIONS:	.size   a.BB.f, .Ltmp0-a.BB.f
-; LINUX-SECTIONS:	.section        .text.f.unlikely,"ax",@progbits
-; LINUX-SECTIONS:	ra.BB.f:
-; LINUX-SECTIONS:	ara.BB.f:
-; LINUX-SECTIONS:	.size   ra.BB.f, .Ltmp1-ra.BB.f
-; LINUX-SECTIONS:	.section        .text.f,"ax",@progbits
-; LINUX-SECTIONS-NEXT:	.Lfunc_end0:
-; LINUX_SECTIONS-NEXT:	.size   f, .Lfunc_end0-f
+declare i32 @bar() #1
+
+declare i32 @baz() #1
+
+; LINUX-SECTIONS1:	   	.section	.text.foo,"ax",@progbits
+; LINUX-SECTIONS1-NOT:  	.section
+; LINUX-SECTIONS1-LABEL:	foo:
+; LINUX-SECTIONS1-NOT:  	.section
+; LINUX-SECTIONS1-LABEL:	# %bb.2:
+; LINUX-SECTIONS1:		.section        .text.foo,"ax",@progbits,unique,1
+; LINUX-SECTIONS1-LABEL:	a.BB.foo:
+; LINUX-SECTIONS1-LABEL:	.Ltmp0:
+; LINUX-SECTIONS1-NEXT:		.size a.BB.foo, .Ltmp0-a.BB.foo
+; LINUX-SECTIONS1-NOT:  	.section
+; LINUX-SECTIONS1:		.section        .text.foo.unlikely,"ax",@progbits
+; LINUX-SECTIONS1-LABEL:	raa.BB.foo:
+; LINUX-SECTIONS1:	   	.section	.text.foo,"ax",@progbits
+; LINUX-SECTIONS1-LABEL:	.Lfunc_end0:
+; LINUX-SECTIONS1-NEXT:		.size foo, .Lfunc_end0-foo
+
+; LINUX-SECTIONS2:		.section        .text.foo,"ax",@progbits
+; LINUX-SECTIONS2-NOT:   	.section
+; LINUX-SECTIONS2-LABEL:	foo:
+; LINUX-SECTIONS2-NOT:   	.section
+; LINUX-SECTIONS2-LABEL:	# %bb.2:
+; LINUX-SECTIONS2:		.section        .text.foo,"ax",@progbits,unique,1
+; LINUX-SECTIONS2-NEXT:		a.BB.foo:
+; LINUX-SECTIONS2-NOT:  	.section
+; LINUX-SECTIONS2-LABEL:	.LBB0_3:
+; LINUX-SECTIONS2-LABEL:	.Ltmp0:
+; LINUX-SECTIONS2-NEXT:		.size a.BB.foo, .Ltmp0-a.BB.foo
+; LINUX-SECTIONS2:		.section        .text.foo,"ax",@progbits
+; LINUX-SECTIONS2-LABEL:	.Lfunc_end0:
+; LINUX-SECTIONS2-NEXT:		.size foo, .Lfunc_end0-foo
 

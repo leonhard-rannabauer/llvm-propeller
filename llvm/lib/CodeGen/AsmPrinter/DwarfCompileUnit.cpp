@@ -351,8 +351,6 @@ void DwarfCompileUnit::initStmtList() {
   if (CUNode->isDebugDirectivesOnly())
     return;
 
-  // Define start line table label for each Compile Unit.
-  MCSymbol *LineTableStartSym;
   const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
   if (DD->useSectionsAsReferences()) {
     LineTableStartSym = TLOF.getDwarfLineSection()->getBeginSymbol();
@@ -366,13 +364,14 @@ void DwarfCompileUnit::initStmtList() {
   // left in the skeleton CU and so not included.
   // The line table entries are not always emitted in assembly, so it
   // is not okay to use line_table_start here.
-  StmtListValue =
       addSectionLabel(getUnitDie(), dwarf::DW_AT_stmt_list, LineTableStartSym,
                       TLOF.getDwarfLineSection()->getBeginSymbol());
 }
 
 void DwarfCompileUnit::applyStmtList(DIE &D) {
-  D.addValue(DIEValueAllocator, *StmtListValue);
+  const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
+  addSectionLabel(D, dwarf::DW_AT_stmt_list, LineTableStartSym,
+                  TLOF.getDwarfLineSection()->getBeginSymbol());
 }
 
 void DwarfCompileUnit::attachLowHighPC(DIE &D, const MCSymbol *Begin,
@@ -399,6 +398,7 @@ DIE &DwarfCompileUnit::updateSubprogramScopeDIE(const DISubprogram *SP) {
     attachLowHighPC(*SPDie, Asm->getFunctionBegin(), Asm->getFunctionEnd());
   else {
     SmallVector<RangeSpan, 2> BB_List;
+
     BB_List.push_back({Asm->getFunctionBegin(), Asm->getFunctionEnd()});
     // If basic block sections are on, the [getFunctionBegin(),
     // getFunctionEnd()] range will include all BBs which are in the same
@@ -408,7 +408,8 @@ DIE &DwarfCompileUnit::updateSubprogramScopeDIE(const DISubprogram *SP) {
       for (auto &MBB : *Asm->MF) {
         if (&MBB != &Asm->MF->front() && MBB.isBeginSection())
           BB_List.push_back(
-              {MBB.getSymbol(), MBB.getSectionEndMBB()->getEndMCSymbol()});
+              {MBB.getSymbol(),
+               Asm->MBBSectionRanges[MBB.getSectionID().toIndex()].EndLabel});
       }
     }
     attachRangesOrLowHighPC(*SPDie, BB_List);
@@ -574,19 +575,22 @@ void DwarfCompileUnit::attachRangesOrLowHighPC(
 
     assert(!BeginMBB->sameSection(EndMBB) &&
            "BeginMBB and EndMBB are in the same section!");
-    const auto *MBBInSection = BeginMBB->getSectionEndMBB();
-    List.push_back({BeginLabel, MBBInSection->getEndMCSymbol()});
-    MBBInSection = MBBInSection->getNextNode();
-    while (!MBBInSection->sameSection(EndMBB)) {
-      assert(MBBInSection->isBeginSection() &&
+    List.push_back(
+        {BeginLabel,
+         Asm->MBBSectionRanges[BeginMBB->getSectionID().toIndex()].EndLabel});
+    const auto *NextSectionMBB = BeginMBB->getSectionEndMBB()->getNextNode();
+    while (NextSectionMBB && !NextSectionMBB->sameSection(EndMBB)) {
+      assert(NextSectionMBB->isBeginSection() &&
              "This should start a new section.");
-      List.push_back({MBBInSection->getSymbol(),
-                      MBBInSection->getSectionEndMBB()->getEndMCSymbol()});
-      MBBInSection = MBBInSection->getSectionEndMBB()->getNextNode();
+      List.push_back(
+          {NextSectionMBB->getSymbol(),
+           Asm->MBBSectionRanges[NextSectionMBB->getSectionID().toIndex()]
+               .EndLabel});
+      NextSectionMBB = NextSectionMBB->getSectionEndMBB()->getNextNode();
     }
 
-    assert(MBBInSection->sameSection(EndMBB));
-    List.push_back({MBBInSection->getSymbol(), EndLabel});
+    assert(NextSectionMBB->sameSection(EndMBB));
+    List.push_back({NextSectionMBB->getSymbol(), EndLabel});
   }
   attachRangesOrLowHighPC(Die, std::move(List));
 }

@@ -2153,8 +2153,8 @@ class OMPClauseEnqueue : public ConstOMPClauseVisitor<OMPClauseEnqueue> {
 
 public:
   OMPClauseEnqueue(EnqueueVisitor *Visitor) : Visitor(Visitor) {}
-#define OPENMP_CLAUSE(Name, Class) void Visit##Class(const Class *C);
-#include "clang/Basic/OpenMPKinds.def"
+#define OMP_CLAUSE_CLASS(Enum, Str, Class) void Visit##Class(const Class *C);
+#include "llvm/Frontend/OpenMP/OMPKinds.def"
   void VisitOMPClauseWithPreInit(const OMPClauseWithPreInit *C);
   void VisitOMPClauseWithPostUpdate(const OMPClauseWithPostUpdate *C);
 };
@@ -5183,6 +5183,10 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("ArraySubscriptExpr");
   case CXCursor_OMPArraySectionExpr:
     return cxstring::createRef("OMPArraySectionExpr");
+  case CXCursor_OMPArrayShapingExpr:
+    return cxstring::createRef("OMPArrayShapingExpr");
+  case CXCursor_OMPIteratorExpr:
+    return cxstring::createRef("OMPIteratorExpr");
   case CXCursor_BinaryOperator:
     return cxstring::createRef("BinaryOperator");
   case CXCursor_CompoundAssignOperator:

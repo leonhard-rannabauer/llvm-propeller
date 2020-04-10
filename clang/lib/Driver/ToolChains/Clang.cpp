@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Clang.h"
+#include "AMDGPU.h"
 #include "Arch/AArch64.h"
 #include "Arch/ARM.h"
 #include "Arch/Mips.h"
@@ -15,11 +16,10 @@
 #include "Arch/Sparc.h"
 #include "Arch/SystemZ.h"
 #include "Arch/X86.h"
-#include "AMDGPU.h"
 #include "CommonArgs.h"
 #include "Hexagon.h"
-#include "MSP430.h"
 #include "InputInfo.h"
+#include "MSP430.h"
 #include "PS4CPU.h"
 #include "clang/Basic/CharInfo.h"
 #include "clang/Basic/CodeGenOptions.h"
@@ -41,6 +41,7 @@
 #include "llvm/Support/Process.h"
 #include "llvm/Support/TargetParser.h"
 #include "llvm/Support/YAMLParser.h"
+#include <cstdarg>
 
 #ifdef LLVM_ON_UNIX
 #include <unistd.h> // For getuid().
@@ -3567,9 +3568,9 @@ static void RenderDiagnosticsOptions(const Driver &D, const ArgList &Args,
     CmdArgs.push_back("-fno-diagnostics-fixit-info");
 
   // Enable -fdiagnostics-show-option by default.
-  if (Args.hasFlag(options::OPT_fdiagnostics_show_option,
-                   options::OPT_fno_diagnostics_show_option))
-    CmdArgs.push_back("-fdiagnostics-show-option");
+  if (!Args.hasFlag(options::OPT_fdiagnostics_show_option,
+                    options::OPT_fno_diagnostics_show_option, true))
+    CmdArgs.push_back("-fno-diagnostics-show-option");
 
   if (const Arg *A =
           Args.getLastArg(options::OPT_fdiagnostics_show_category_EQ)) {
@@ -4192,7 +4193,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       StringRef ArgStr =
           Args.hasArg(options::OPT_interface_stub_version_EQ)
               ? Args.getLastArgValue(options::OPT_interface_stub_version_EQ)
-              : "experimental-ifs-v1";
+              : "experimental-ifs-v2";
       CmdArgs.push_back("-emit-interface-stubs");
       CmdArgs.push_back(
           Args.MakeArgString(Twine("-interface-stub-version=") + ArgStr.str()));
@@ -4657,9 +4658,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // Decide whether to use verbose asm. Verbose assembly is the default on
   // toolchains which have the integrated assembler on by default.
   bool IsIntegratedAssemblerDefault = TC.IsIntegratedAssemblerDefault();
-  if (Args.hasFlag(options::OPT_fverbose_asm, options::OPT_fno_verbose_asm,
-                   IsIntegratedAssemblerDefault))
-    CmdArgs.push_back("-masm-verbose");
+  if (!Args.hasFlag(options::OPT_fverbose_asm, options::OPT_fno_verbose_asm,
+                    IsIntegratedAssemblerDefault))
+    CmdArgs.push_back("-fno-verbose-asm");
 
   if (!TC.useIntegratedAs())
     CmdArgs.push_back("-no-integrated-as");
@@ -4890,8 +4891,13 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   if (Arg *A = Args.getLastArg(options::OPT_fbasicblock_sections_EQ)) {
-    CmdArgs.push_back(
-        Args.MakeArgString(Twine("-fbasicblock-sections=") + A->getValue()));
+    StringRef Val = A->getValue();
+    if (Val != "all" && Val != "labels" && Val != "none" &&
+        !llvm::sys::fs::exists(Val))
+      D.Diag(diag::err_drv_invalid_value)
+          << A->getAsString(Args) << A->getValue();
+    else
+      A->render(Args, CmdArgs);
   }
 
   if (Args.hasFlag(options::OPT_fdata_sections, options::OPT_fno_data_sections,
@@ -4907,7 +4913,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                    options::OPT_fno_unique_internal_linkage_names, false))
     CmdArgs.push_back("-funique-internal-linkage-names");
 
-  if (Args.hasArg(options::OPT_funique_bb_section_names))
+  if (Args.hasFlag(options::OPT_funique_bb_section_names,
+                   options::OPT_fno_unique_bb_section_names, false))
     CmdArgs.push_back("-funique-bb-section-names");
 
   Args.AddLastArg(CmdArgs, options::OPT_finstrument_functions,
@@ -5179,15 +5186,20 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   // Pass -fmessage-length=.
-  CmdArgs.push_back("-fmessage-length");
+  unsigned MessageLength = 0;
   if (Arg *A = Args.getLastArg(options::OPT_fmessage_length_EQ)) {
-    CmdArgs.push_back(A->getValue());
+    StringRef V(A->getValue());
+    if (V.getAsInteger(0, MessageLength))
+      D.Diag(diag::err_drv_invalid_argument_to_option)
+          << V << A->getOption().getName();
   } else {
     // If -fmessage-length=N was not specified, determine whether this is a
     // terminal and, if so, implicitly define -fmessage-length appropriately.
-    unsigned N = llvm::sys::Process::StandardErrColumns();
-    CmdArgs.push_back(Args.MakeArgString(Twine(N)));
+    MessageLength = llvm::sys::Process::StandardErrColumns();
   }
+  if (MessageLength != 0)
+    CmdArgs.push_back(
+        Args.MakeArgString("-fmessage-length=" + Twine(MessageLength)));
 
   // -fvisibility= and -fvisibility-ms-compat are of a piece.
   if (const Arg *A = Args.getLastArg(options::OPT_fvisibility_EQ,
@@ -5657,7 +5669,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_fexperimental_new_pass_manager,
                   options::OPT_fno_experimental_new_pass_manager);
 
-  ObjCRuntime Runtime = AddObjCRuntimeArgs(Args, CmdArgs, rewriteKind);
+  ObjCRuntime Runtime = AddObjCRuntimeArgs(Args, Inputs, CmdArgs, rewriteKind);
   RenderObjCOptions(TC, D, RawTriple, Args, Runtime, rewriteKind != RK_None,
                     Input, CmdArgs);
 
@@ -6111,10 +6123,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (SplitLTOUnit)
     CmdArgs.push_back("-fsplit-lto-unit");
 
-  if (Arg *A = Args.getLastArg(options::OPT_fexperimental_isel,
-                               options::OPT_fno_experimental_isel)) {
+  if (Arg *A = Args.getLastArg(options::OPT_fglobal_isel,
+                               options::OPT_fno_global_isel)) {
     CmdArgs.push_back("-mllvm");
-    if (A->getOption().matches(options::OPT_fexperimental_isel)) {
+    if (A->getOption().matches(options::OPT_fglobal_isel)) {
       CmdArgs.push_back("-global-isel=1");
 
       // GISel is on by default on AArch64 -O0, so don't bother adding
@@ -6133,9 +6145,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
         CmdArgs.push_back("-global-isel-abort=2");
 
         if (!IsArchSupported)
-          D.Diag(diag::warn_drv_experimental_isel_incomplete) << Triple.getArchName();
+          D.Diag(diag::warn_drv_global_isel_incomplete) << Triple.getArchName();
         else
-          D.Diag(diag::warn_drv_experimental_isel_incomplete_opt);
+          D.Diag(diag::warn_drv_global_isel_incomplete_opt);
       }
     } else {
       CmdArgs.push_back("-global-isel=0");
@@ -6301,6 +6313,7 @@ Clang::~Clang() {}
 ///
 /// Returns true if the runtime is non-fragile.
 ObjCRuntime Clang::AddObjCRuntimeArgs(const ArgList &args,
+                                      const InputInfoList &inputs,
                                       ArgStringList &cmdArgs,
                                       RewriteKind rewriteKind) const {
   // Look for the controlling runtime option.
@@ -6424,8 +6437,11 @@ ObjCRuntime Clang::AddObjCRuntimeArgs(const ArgList &args,
       runtime = ObjCRuntime(ObjCRuntime::GCC, VersionTuple());
   }
 
-  cmdArgs.push_back(
-      args.MakeArgString("-fobjc-runtime=" + runtime.getAsString()));
+  if (llvm::any_of(inputs, [](const InputInfo &input) {
+        return types::isObjC(input.getType());
+      }))
+    cmdArgs.push_back(
+        args.MakeArgString("-fobjc-runtime=" + runtime.getAsString()));
   return runtime;
 }
 

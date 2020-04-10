@@ -1467,7 +1467,7 @@ private:
     unsigned TC : 8;
 
     /// Store information on the type dependency.
-    /*TypeDependence*/ unsigned Dependence : TypeDependenceBits;
+    unsigned Dependence : llvm::BitWidth<TypeDependence>;
 
     /// True if the cache (i.e. the bitfields here starting with
     /// 'Cache') is valid.
@@ -1496,7 +1496,7 @@ private:
       return CachedLocalOrUnnamed;
     }
   };
-  enum { NumTypeBits = 8 + TypeDependenceBits + 6 };
+  enum { NumTypeBits = 8 + llvm::BitWidth<TypeDependence> + 6 };
 
 protected:
   // These classes allow subclasses to somewhat cleanly pack bitfields
@@ -1650,11 +1650,8 @@ protected:
     /// The kind of vector, either a generic vector type or some
     /// target-specific vector type such as for AltiVec or Neon.
     unsigned VecKind : 3;
-
     /// The number of elements in the vector.
-    unsigned NumElements : 29 - NumTypeBits;
-
-    enum { MaxNumElements = (1 << (29 - NumTypeBits)) - 1 };
+    uint32_t NumElements;
   };
 
   class AttributedTypeBitfields {
@@ -2111,6 +2108,11 @@ public:
   /// than implicitly __strong.
   bool isObjCARCImplicitlyUnretainedType() const;
 
+  /// Check if the type is the CUDA device builtin surface type.
+  bool isCUDADeviceBuiltinSurfaceType() const;
+  /// Check if the type is the CUDA device builtin texture type.
+  bool isCUDADeviceBuiltinTextureType() const;
+
   /// Return the implicit lifetime for this type, which must not be dependent.
   Qualifiers::ObjCLifetime getObjCARCImplicitLifetime() const;
 
@@ -2132,6 +2134,11 @@ public:
 
   TypeDependence getDependence() const {
     return static_cast<TypeDependence>(TypeBits.Dependence);
+  }
+
+  /// Whether this type is an error type.
+  bool containsErrors() const {
+    return getDependence() & TypeDependence::Error;
   }
 
   /// Whether this type is a dependent type, meaning that its definition
@@ -3238,10 +3245,6 @@ protected:
 public:
   QualType getElementType() const { return ElementType; }
   unsigned getNumElements() const { return VectorTypeBits.NumElements; }
-
-  static bool isVectorSizeTooLarge(unsigned NumElements) {
-    return NumElements > VectorTypeBitfields::MaxNumElements;
-  }
 
   bool isSugared() const { return false; }
   QualType desugar() const { return QualType(this, 0); }

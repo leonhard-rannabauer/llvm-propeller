@@ -34,7 +34,7 @@ func @int_attrs_pass() {
 // -----
 
 //===----------------------------------------------------------------------===//
-// Check that the maximum and minumum integer attribute values are
+// Check that the maximum and minimum integer attribute values are
 // representable and preserved during a round-trip.
 //===----------------------------------------------------------------------===//
 
@@ -247,7 +247,7 @@ func @non_type_in_type_array_attr_fail() {
 // CHECK-LABEL: func @string_attr_custom_type
 func @string_attr_custom_type() {
   // CHECK: "string_data" : !foo.string
-  test.string_attr_with_type "string_data"
+  test.string_attr_with_type "string_data" : !foo.string
   return
 }
 

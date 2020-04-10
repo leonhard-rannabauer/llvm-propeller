@@ -181,8 +181,7 @@ public:
   /// atomic operations the atomic ordering requirements when store does not
   /// occur must also be specified.
   MachineMemOperand(MachinePointerInfo PtrInfo, Flags flags, uint64_t s,
-                    uint64_t a,
-                    const AAMDNodes &AAInfo = AAMDNodes(),
+                    Align a, const AAMDNodes &AAInfo = AAMDNodes(),
                     const MDNode *Ranges = nullptr,
                     SyncScope::ID SSID = SyncScope::System,
                     AtomicOrdering Ordering = AtomicOrdering::NotAtomic,
@@ -223,9 +222,6 @@ public:
   /// Return the size in bits of the memory reference.
   uint64_t getSizeInBits() const { return Size * 8; }
 
-  /// Return the minimum known alignment in bytes of the actual memory
-  /// reference.
-  /// FIXME: Remove once transition to Align is over.
   LLVM_ATTRIBUTE_DEPRECATED(uint64_t getAlignment() const,
                             "Use getAlign instead");
 
@@ -233,9 +229,6 @@ public:
   /// reference.
   Align getAlign() const;
 
-  /// Return the minimum known alignment in bytes of the base address, without
-  /// the offset.
-  /// FIXME: Remove once transition to Align is over.
   LLVM_ATTRIBUTE_DEPRECATED(uint64_t getBaseAlignment() const,
                             "Use getBaseAlign instead") {
     return BaseAlign.value();

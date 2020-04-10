@@ -1449,7 +1449,7 @@ bool JumpThreadingPass::SimplifyPartiallyRedundantLoad(LoadInst *LoadI) {
            "Can't handle critical edge here!");
     LoadInst *NewVal = new LoadInst(
         LoadI->getType(), LoadedPtr->DoPHITranslation(LoadBB, UnavailablePred),
-        LoadI->getName() + ".pr", false, MaybeAlign(LoadI->getAlignment()),
+        LoadI->getName() + ".pr", false, LoadI->getAlign(),
         LoadI->getOrdering(), LoadI->getSyncScopeID(),
         UnavailablePred->getTerminator());
     NewVal->setDebugLoc(LoadI->getDebugLoc());
@@ -2833,6 +2833,16 @@ bool JumpThreadingPass::TryToUnfoldSelect(CmpInst *CondCmp, BasicBlock *BB) {
 /// select is not jump-threaded, it will be folded again in the later
 /// optimizations.
 bool JumpThreadingPass::TryToUnfoldSelectInCurrBB(BasicBlock *BB) {
+  // This transform can introduce a UB (a conditional branch that depends on a
+  // poison value) that was not present in the original program. See
+  // @TryToUnfoldSelectInCurrBB test in test/Transforms/JumpThreading/select.ll.
+  // Disable this transform under MemorySanitizer.
+  // FIXME: either delete it or replace with a valid transform. This issue is
+  // not limited to MemorySanitizer (but has only been observed as an MSan false
+  // positive in practice so far).
+  if (BB->getParent()->hasFnAttribute(Attribute::SanitizeMemory))
+    return false;
+
   // If threading this would thread across a loop header, don't thread the edge.
   // See the comments above FindLoopHeaders for justifications and caveats.
   if (LoopHeaders.count(BB))

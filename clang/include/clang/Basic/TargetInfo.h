@@ -16,7 +16,7 @@
 
 #include "clang/Basic/AddressSpaces.h"
 #include "clang/Basic/LLVM.h"
-#include "clang/Basic/CodeGenOptions.h"
+#include "clang/Basic/LangOptions.h"
 #include "clang/Basic/Specifiers.h"
 #include "clang/Basic/TargetCXXABI.h"
 #include "clang/Basic/TargetOptions.h"
@@ -211,6 +211,8 @@ protected:
   unsigned HasAArch64SVETypes : 1;
 
   unsigned ARMCDECoprocMask : 8;
+
+  unsigned MaxOpenCLWorkGroupSize;
 
   // TargetInfo Constructor.  Default initializes all fields.
   TargetInfo(const llvm::Triple &T);
@@ -662,6 +664,8 @@ public:
   /// value is type-specific, but this alignment can be used for most of the
   /// types for the given target.
   unsigned getSimdDefaultAlign() const { return SimdDefaultAlign; }
+
+  unsigned getMaxOpenCLWorkGroupSize() const { return MaxOpenCLWorkGroupSize; }
 
   /// Return the alignment (in bits) of the thrown exception object. This is
   /// only meaningful for targets that allocate C++ exceptions in a system
@@ -1134,10 +1138,10 @@ public:
   }
 
   struct BranchProtectionInfo {
-    CodeGenOptions::SignReturnAddressScope SignReturnAddr =
-        CodeGenOptions::SignReturnAddressScope::None;
-    CodeGenOptions::SignReturnAddressKeyValue SignKey =
-        CodeGenOptions::SignReturnAddressKeyValue::AKey;
+    LangOptions::SignReturnAddressScopeKind SignReturnAddr =
+        LangOptions::SignReturnAddressScopeKind::None;
+    LangOptions::SignReturnAddressKeyKind SignKey =
+        LangOptions::SignReturnAddressKeyKind::AKey;
     bool BranchTargetEnforcement = false;
   };
 

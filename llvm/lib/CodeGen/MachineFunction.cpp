@@ -133,8 +133,7 @@ static inline unsigned getFnStackAlignment(const TargetSubtargetInfo *STI,
   return STI->getFrameLowering()->getStackAlign().value();
 }
 
-MachineFunction::MachineFunction(const Function &F,
-                                 const LLVMTargetMachine &Target,
+MachineFunction::MachineFunction(Function &F, const LLVMTargetMachine &Target,
                                  const TargetSubtargetInfo &STI,
                                  unsigned FunctionNum, MachineModuleInfo &mmi)
     : F(F), Target(Target), STI(&STI), Ctx(mmi.getContext()), MMI(mmi) {
@@ -368,6 +367,22 @@ void MachineFunction::createBBLabels() {
   }
 }
 
+/// This method iterates over the basic blocks and assigns their IsBeginSection
+/// and IsEndSection fields. This must be called after MBB layout is finalized
+/// and the SectionID's are assigned to MBBs.
+void MachineFunction::assignBeginEndSections() {
+  front().setIsBeginSection();
+  auto CurrentSectionID = front().getSectionID();
+  for (auto MBBI = std::next(begin()), E = end(); MBBI != E; ++MBBI) {
+    if (MBBI->getSectionID() == CurrentSectionID)
+      continue;
+    MBBI->setIsBeginSection();
+    std::prev(MBBI)->setIsEndSection();
+    CurrentSectionID = MBBI->getSectionID();
+  }
+  back().setIsEndSection();
+}
+
 /// Allocate a new MachineInstr. Use this instead of `new MachineInstr'.
 MachineInstr *MachineFunction::CreateMachineInstr(const MCInstrDesc &MCID,
                                                   const DebugLoc &DL,
@@ -445,7 +460,7 @@ MachineFunction::DeleteMachineBasicBlock(MachineBasicBlock *MBB) {
 
 MachineMemOperand *MachineFunction::getMachineMemOperand(
     MachinePointerInfo PtrInfo, MachineMemOperand::Flags f, uint64_t s,
-    unsigned base_alignment, const AAMDNodes &AAInfo, const MDNode *Ranges,
+    Align base_alignment, const AAMDNodes &AAInfo, const MDNode *Ranges,
     SyncScope::ID SSID, AtomicOrdering Ordering,
     AtomicOrdering FailureOrdering) {
   return new (Allocator)
@@ -464,10 +479,10 @@ MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
                         ? commonAlignment(MMO->getBaseAlign(), Offset)
                         : MMO->getBaseAlign();
 
-  return new (Allocator) MachineMemOperand(
-      PtrInfo.getWithOffset(Offset), MMO->getFlags(), Size, Alignment.value(),
-      AAMDNodes(), nullptr, MMO->getSyncScopeID(), MMO->getOrdering(),
-      MMO->getFailureOrdering());
+  return new (Allocator)
+      MachineMemOperand(PtrInfo.getWithOffset(Offset), MMO->getFlags(), Size,
+                        Alignment, AAMDNodes(), nullptr, MMO->getSyncScopeID(),
+                        MMO->getOrdering(), MMO->getFailureOrdering());
 }
 
 MachineMemOperand *
@@ -478,7 +493,7 @@ MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
              MachinePointerInfo(MMO->getPseudoValue(), MMO->getOffset());
 
   return new (Allocator) MachineMemOperand(
-      MPI, MMO->getFlags(), MMO->getSize(), MMO->getBaseAlign().value(), AAInfo,
+      MPI, MMO->getFlags(), MMO->getSize(), MMO->getBaseAlign(), AAInfo,
       MMO->getRanges(), MMO->getSyncScopeID(), MMO->getOrdering(),
       MMO->getFailureOrdering());
 }
@@ -487,7 +502,7 @@ MachineMemOperand *
 MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
                                       MachineMemOperand::Flags Flags) {
   return new (Allocator) MachineMemOperand(
-      MMO->getPointerInfo(), Flags, MMO->getSize(), MMO->getBaseAlign().value(),
+      MMO->getPointerInfo(), Flags, MMO->getSize(), MMO->getBaseAlign(),
       MMO->getAAInfo(), MMO->getRanges(), MMO->getSyncScopeID(),
       MMO->getOrdering(), MMO->getFailureOrdering());
 }

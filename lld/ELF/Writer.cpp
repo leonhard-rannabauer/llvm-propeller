@@ -38,6 +38,8 @@
 
 #define DEBUG_TYPE "lld"
 
+#define DEBUG_TYPE "lld"
+
 using namespace llvm;
 using namespace llvm::ELF;
 using namespace llvm::object;
@@ -849,7 +851,8 @@ static bool isRelroSection(const OutputSection *sec) {
   StringRef s = sec->name;
   return s == ".data.rel.ro" || s == ".bss.rel.ro" || s == ".ctors" ||
          s == ".dtors" || s == ".jcr" || s == ".eh_frame" ||
-         s == ".openbsd.randomdata";
+         s == ".fini_array" || s == ".init_array" ||
+         s == ".openbsd.randomdata" || s == ".preinit_array";
 }
 
 // We compute a rank for each section. The rank indicates where the
@@ -1592,17 +1595,30 @@ template <class ELFT> void Writer<ELFT>::resolveShfLinkOrder() {
     // but sort must consider them all at once.
     std::vector<InputSection **> scriptSections;
     std::vector<InputSection *> sections;
+    bool started = false, stopped = false;
     for (BaseCommand *base : sec->sectionCommands) {
       if (auto *isd = dyn_cast<InputSectionDescription>(base)) {
         for (InputSection *&isec : isd->sections) {
-          scriptSections.push_back(&isec);
-          sections.push_back(isec);
+          if (!(isec->flags & SHF_LINK_ORDER)) {
+            if (started)
+              stopped = true;
+          } else if (stopped) {
+            error(toString(isec) + ": SHF_LINK_ORDER sections in " + sec->name +
+                  " are not contiguous");
+          } else {
+            started = true;
 
-          InputSection *link = isec->getLinkOrderDep();
-          if (!link->getParent())
-            error(toString(isec) + ": sh_link points to discarded section " +
-                  toString(link));
+            scriptSections.push_back(&isec);
+            sections.push_back(isec);
+
+            InputSection *link = isec->getLinkOrderDep();
+            if (!link->getParent())
+              error(toString(isec) + ": sh_link points to discarded section " +
+                    toString(link));
+          }
         }
+      } else if (started) {
+        stopped = true;
       }
     }
 
@@ -1780,8 +1796,7 @@ template <class ELFT> void Writer<ELFT>::optimizeBasicBlockJumps() {
     // consecutive jump instructions can be flipped so that a fall
     // through jmp instruction can be deleted.
     parallelForEachN(0, sections.size(), [&](size_t i) {
-      InputSection *next =
-          (i + 1) < sections.size() ? sections[i + 1] : nullptr;
+      InputSection *next = i + 1 < sections.size() ? sections[i + 1] : nullptr;
       InputSection &is = *sections[i];
       if (!noneOptimizableSections.count(&is))
         result[i] =
@@ -2187,7 +2202,8 @@ template <class ELFT> void Writer<ELFT>::finalizeSections() {
   finalizeSynthetic(in.ppc64LongBranchTarget);
 
   // Relaxation to delete inter-basic block jumps created by basic block
-  // sections. Run after in.symTab is finalized.
+  // sections. Run after in.symTab is finalized as optimizeBasicBlockJumps
+  // can relax jump instructions based on symbol offset.
   if (config->optimizeBBJumps)
     optimizeBasicBlockJumps();
 

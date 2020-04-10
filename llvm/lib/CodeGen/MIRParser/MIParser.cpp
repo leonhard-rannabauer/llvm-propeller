@@ -495,7 +495,7 @@ public:
   bool parseOffset(int64_t &Offset);
   bool parseAlignment(unsigned &Alignment);
   bool parseAddrspace(unsigned &Addrspace);
-  bool parseSectionID(Optional<unsigned> &SID);
+  bool parseSectionID(Optional<MBBSectionID> &SID);
   bool parseOperandsOffset(MachineOperand &Op);
   bool parseIRValue(const Value *&V);
   bool parseMemoryOperandFlag(MachineMemOperand::Flags &Flags);
@@ -621,20 +621,20 @@ bool MIParser::consumeIfPresent(MIToken::TokenKind TokenKind) {
 }
 
 // Parse Machine Basic Block Section ID.
-bool MIParser::parseSectionID(Optional<unsigned> &SID) {
+bool MIParser::parseSectionID(Optional<MBBSectionID> &SID) {
   assert(Token.is(MIToken::kw_bbsections));
   lex();
   if (Token.is(MIToken::IntegerLiteral)) {
     unsigned Value = 0;
     if (getUnsigned(Value))
-      return error("Uknown Section ID");
-    SID = Value;
+      return error("Unknown Section ID");
+    SID = MBBSectionID{Value};
   } else {
     const StringRef &S = Token.stringValue();
     if (S == "Exception")
-      SID = MachineBasicBlock::ExceptionSectionID;
+      SID = MBBSectionID::ExceptionSectionID;
     else if (S == "Cold")
-      SID = MachineBasicBlock::ColdSectionID;
+      SID = MBBSectionID::ColdSectionID;
     else
       return error("Unknown Section ID");
   }
@@ -654,7 +654,7 @@ bool MIParser::parseBasicBlockDefinition(
   bool HasAddressTaken = false;
   bool IsLandingPad = false;
   bool IsEHFuncletEntry = false;
-  Optional<unsigned> SectionID;
+  Optional<MBBSectionID> SectionID;
   unsigned Alignment = 0;
   BasicBlock *BB = nullptr;
   if (consumeIfPresent(MIToken::lparen)) {
@@ -3098,8 +3098,8 @@ bool MIParser::parseMachineMemoryOperand(MachineMemOperand *&Dest) {
   }
   if (expectAndConsume(MIToken::rparen))
     return true;
-  Dest = MF.getMachineMemOperand(Ptr, Flags, Size, BaseAlignment, AAInfo, Range,
-                                 SSID, Order, FailureOrder);
+  Dest = MF.getMachineMemOperand(Ptr, Flags, Size, Align(BaseAlignment), AAInfo,
+                                 Range, SSID, Order, FailureOrder);
   return false;
 }
 

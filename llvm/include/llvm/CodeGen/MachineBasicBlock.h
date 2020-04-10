@@ -46,6 +46,43 @@ class raw_ostream;
 class TargetRegisterClass;
 class TargetRegisterInfo;
 
+// This structure uniquely identifies a basic block section.
+// Possible values are
+//  {Type: Default, Number: (unsigned)} (These are regular section IDs)
+//  {Type: Exception, Number: 0}  (ExceptionSectionID)
+//  {Type: Cold, Number: 0}  (ColdSectionID)
+struct MBBSectionID {
+  enum SectionType {
+    Default = 0, // Regular section (these sections are distinguished by the
+                 // Number field).
+    Exception,   // Special section type for exception handling blocks
+    Cold,        // Special section type for cold blocks
+  } Type;
+  unsigned Number;
+
+  MBBSectionID(unsigned N) : Type(Default), Number(N) {}
+
+  // Special unique sections for cold and exception blocks.
+  const static MBBSectionID ColdSectionID;
+  const static MBBSectionID ExceptionSectionID;
+
+  bool operator==(const MBBSectionID &Other) const {
+    return Type == Other.Type && Number == Other.Number;
+  }
+
+  // This returns a unique index for the section in the range [0, max(Number)+2]
+  unsigned toIndex() {
+    return ((unsigned)MBBSectionID::SectionType::Cold) - ((unsigned)Type) +
+           Number;
+  }
+
+  static unsigned indexSize(unsigned NumBlockIDs) { return NumBlockIDs + 2; }
+
+private:
+  // This is only used to construct the special cold and exception sections.
+  MBBSectionID(SectionType T) : Type(T), Number(0) {}
+};
+
 template <> struct ilist_traits<MachineInstr> {
 private:
   friend class MachineBasicBlock; // Set by the owning MachineBasicBlock.
@@ -77,10 +114,6 @@ public:
     RegisterMaskPair(MCPhysReg PhysReg, LaneBitmask LaneMask)
         : PhysReg(PhysReg), LaneMask(LaneMask) {}
   };
-
-  // Special section IDs for the cold and exception section
-  const static unsigned ColdSectionID = UINT_MAX;
-  const static unsigned ExceptionSectionID = UINT_MAX - 1;
 
 private:
   using Instructions = ilist<MachineInstr, ilist_sentinel_tracking<true>>;
@@ -134,8 +167,14 @@ private:
   /// Indicate that this basic block is the entry block of a cleanup funclet.
   bool IsCleanupFuncletEntry = false;
 
-  /// Stores the Section ID of the basic block with basic block sections.
-  Optional<unsigned> SectionID;
+  /// With basic block sections, this stores the Section ID of the basic block.
+  MBBSectionID SectionID{0};
+
+  // Indicate that this basic block begins a section.
+  bool IsBeginSection = false;
+
+  // Indicate that this basic block ends a section.
+  bool IsEndSection = false;
 
   /// Default target of the callbr of a basic block.
   bool InlineAsmBrDefaultTarget = false;
@@ -426,16 +465,20 @@ public:
   void setIsCleanupFuncletEntry(bool V = true) { IsCleanupFuncletEntry = V; }
 
   /// Returns true if this block begins any section.
-  bool isBeginSection() const;
+  bool isBeginSection() const { return IsBeginSection; }
 
   /// Returns true if this block ends any section.
-  bool isEndSection() const;
+  bool isEndSection() const { return IsEndSection; }
 
-  /// Returns the the section id that this basic block belongs to.
-  Optional<unsigned> getSectionID() const { return SectionID; }
+  void setIsBeginSection(bool V = true) { IsBeginSection = V; }
 
-  /// Indicate that the basic block belongs to a Section Type.
-  void setSectionID(unsigned V) { SectionID = V; }
+  void setIsEndSection(bool V = true) { IsEndSection = V; }
+
+  /// Returns the section ID of this basic block.
+  MBBSectionID getSectionID() const { return SectionID; }
+
+  /// Sets the section ID for this basic block.
+  void setSectionID(MBBSectionID V) { SectionID = V; }
 
   /// Returns true if this is the indirect dest of an INLINEASM_BR.
   bool isInlineAsmBrIndirectTarget(const MachineBasicBlock *Tgt) const {
@@ -476,7 +519,9 @@ public:
   void moveAfter(MachineBasicBlock *NewBefore);
 
   /// Returns true if this and MBB belong to the same section.
-  bool sameSection(const MachineBasicBlock *MBB) const;
+  bool sameSection(const MachineBasicBlock *MBB) const {
+    return getSectionID() == MBB->getSectionID();
+  }
 
   /// Returns the basic block that ends the section which contains this one.
   const MachineBasicBlock *getSectionEndMBB() const;
@@ -866,12 +911,6 @@ public:
 
   /// Return the MCSymbol for this basic block.
   MCSymbol *getSymbol() const;
-
-  /// Sets the MCSymbol corresponding to the end of this basic block.
-  void setEndMCSymbol(MCSymbol *Sym) { EndMCSymbol = Sym; }
-
-  /// Returns the MCSymbol corresponding to the end of this basic block.
-  MCSymbol *getEndMCSymbol() const { return EndMCSymbol; }
 
   Optional<uint64_t> getIrrLoopHeaderWeight() const {
     return IrrLoopHeaderWeight;

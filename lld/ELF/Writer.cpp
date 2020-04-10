@@ -1700,6 +1700,29 @@ template <class ELFT> void Writer<ELFT>::finalizeAddressDependentContent() {
              Twine(os->alignment) + ")");
 }
 
+static void getNoneOptimizableSections(DenseSet<const InputSection*>& sectionSet) {
+  for (InputFile *File : objectFiles) {
+    parallelForEach(File->getSymbols(), [&](Symbol *Sym) {
+      auto *def = dyn_cast<Defined>(Sym);
+      if (!def)
+        return;
+      if (!def->value)
+        return;
+
+      const SectionBase *sec = def->section;
+      if (!sec)
+        return;
+
+      const InputSection *inputSec = dyn_cast_or_null<InputSection>(sec->repl);
+      if (!inputSec)
+        return;
+      if (def->value + 6 == inputSec->data().size() ||
+          def->value + 5 == inputSec->data().size() )
+        sectionSet.insert(inputSec);
+    });
+  }
+}
+
 // If Input Sections have been shrinked (basic block sections) then
 // update symbol values and sizes associated with these sections.  With basic
 // block sections, input sections can shrink when the jump instructions at
@@ -1748,32 +1771,34 @@ static void fixSymbolsAfterShrinking() {
 // relaxation pass does that.  It is only enabled when --optimize-bb-jumps
 // option is used.
 template <class ELFT> void Writer<ELFT>::optimizeBasicBlockJumps() {
-  if (!config->optimizeBBJumps)
-    return;
+  assert(config->optimizeBBJumps);
 
   script->assignAddresses();
+  DenseSet<const InputSection*> noneOptimizableSections;
+  getNoneOptimizableSections(noneOptimizableSections);
   // For every output section that has executable input sections, this
-  // does 3 things:
-  //   1.  It deletes all direct jump instructions in input sections that
-  //       jump to the following section as it is not required.  If there
-  //       are two consecutive jump instructions, it checks if they can be
-  //       flipped and one can be deleted.
-  //   2.  It aggressively shrinks jump instructions.
-  //   3.  It aggressively grows back jump instructions.
+  // does the following:
+  //   1. Deletes all direct jump instructions in input sections that
+  //      jump to the following section as it is not required.
+  //   2. If there are two consecutive jump instructions, it checks
+  //      if they can be flipped and one can be deleted.
+  //   3. It aggressively shrinks jump instructions.
+  //   4. It aggressively grows back jump instructions.
   for (OutputSection *os : outputSections) {
     if (!(os->flags & SHF_EXECINSTR))
       continue;
     std::vector<InputSection *> sections = getInputSections(os);
     std::vector<unsigned> result(sections.size());
-    // Step 1: Delete all fall through jump instructions.  Also, check if two
-    // consecutive jump instructions can be flipped so that a fall through jmp
-    // instruction can be deleted.
+    // Delete all fall through jump instructions.  Also, check if two
+    // consecutive jump instructions can be flipped so that a fall
+    // through jmp instruction can be deleted.
     parallelForEachN(0, sections.size(), [&](size_t i) {
       InputSection *next =
           (i + 1) < sections.size() ? sections[i + 1] : nullptr;
       InputSection &is = *sections[i];
-      result[i] =
-          target->deleteFallThruJmpInsn(is, is.getFile<ELFT>(), next) ? 1 : 0;
+      if (!noneOptimizableSections.count(&is))
+        result[i] =
+            target->deleteFallThruJmpInsn(is, is.getFile<ELFT>(), next) ? 1 : 0;
     });
     size_t numDeleted = std::count(result.begin(), result.end(), 1);
     if (numDeleted > 0) {
@@ -1796,9 +1821,11 @@ template <class ELFT> void Writer<ELFT>::optimizeBasicBlockJumps() {
       anyChanged = false;
       parallelForEachN(0, sections.size(), [&](size_t i) {
         InputSection &is = *sections[i];
-        unsigned BytesShrunk = target->shrinkJmpInsn(is, is.getFile<ELFT>());
-        changed[i] = (BytesShrunk > 0) ? 1 : 0;
-        shrunk[i] += BytesShrunk;
+        if (!noneOptimizableSections.count(&is)) {
+          unsigned BytesShrunk = target->shrinkJmpInsn(is, is.getFile<ELFT>());
+          changed[i] = (BytesShrunk > 0) ? 1 : 0;
+          shrunk[i] += BytesShrunk;
+        }
       });
       anyChanged = std::any_of(changed.begin(), changed.end(),
                                [](unsigned e) { return e > 0; });
@@ -1820,9 +1847,11 @@ template <class ELFT> void Writer<ELFT>::optimizeBasicBlockJumps() {
       anyChanged = false;
       parallelForEachN(0, sections.size(), [&](size_t i) {
         InputSection &is = *sections[i];
-        unsigned bytesGrown = target->growJmpInsn(is, is.getFile<ELFT>());
-        changed[i] = (bytesGrown > 0);
-        grown[i] += bytesGrown;
+        if (!noneOptimizableSections.count(&is)) {
+          unsigned bytesGrown = target->growJmpInsn(is, is.getFile<ELFT>());
+          changed[i] = (bytesGrown > 0);
+          grown[i] += bytesGrown;
+        }
       });
       size_t num = std::count_if(grown.begin(), grown.end(),
                                  [](int e) { return e > 0; });
@@ -2171,8 +2200,9 @@ template <class ELFT> void Writer<ELFT>::finalizeSections() {
   finalizeSynthetic(in.ppc64LongBranchTarget);
 
   // Relaxation to delete inter-basic block jumps created by basic block
-  // sections.
-  optimizeBasicBlockJumps();
+  // sections. Run after in.symTab is finalized.
+  if (config->optimizeBBJumps)
+    optimizeBasicBlockJumps();
 
   // Fill other section headers. The dynamic table is finalized
   // at the end because some tags like RELSZ depend on result

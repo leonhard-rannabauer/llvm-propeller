@@ -348,6 +348,7 @@ static bool assignSectionsAndSortBasicBlocks(
         Prefix += ".";
         Prefix += std::to_string(MBB.getSectionID().Number);
         TextSectionPrefix[Layout[LI]] = MBB.TextSectionPrefix = Prefix;
+        errs() << "Setting text section prefix: " << LI << " : " << Prefix << "\n";
         if (MBB.pred_empty())
           const_cast<Function*>(&MBB.getParent()->getFunction())->TextSectionPrefix = MBB.TextSectionPrefix;
       }

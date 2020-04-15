@@ -335,10 +335,10 @@ static bool assignSectionsAndSortBasicBlocks(
   for(auto &MBB: MF) {
     if (MBB.isBeginSection() && MBB.getSectionID().Type == MBBSectionID::Default) {
       auto LI = ProgramClusterLayoutInfo[MF.getName()][MBB.getSectionID().Number];
-      if (LI)
-        errs() << "Previous one is " << Layout[LI-1].first << "*" << Layout[LI-1].second << "\n";
+      //if (LI)
+      //  errs() << "Previous one is " << Layout[LI-1].first << "*" << Layout[LI-1].second << "\n";
       if (LI && FuncOrder.count(Layout[LI-1].first) && FuncOrder.lookup(MF.getName()) > FuncOrder.lookup(Layout[LI-1].first)) {
-        errs() << "Piggy back : " << Layout[LI].first << "*" << Layout[LI].second << " ----> " << Layout[LI-1].first << "*" << Layout[LI-1].second << "\n";
+        //errs() << "Piggy back : " << Layout[LI].first << "*" << Layout[LI].second << " ----> " << Layout[LI-1].first << "*" << Layout[LI-1].second << "\n";
         assert(TextSectionPrefix.count(Layout[LI-1]));
         TextSectionPrefix[Layout[LI]] = MBB.TextSectionPrefix = TextSectionPrefix[Layout[LI-1]];
         if (MBB.pred_empty())

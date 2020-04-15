@@ -87,7 +87,7 @@ static lto::Config createConfig() {
       c.Options.BBSections = BasicBlockSection::Labels;
     } else if (config->ltoBasicBlockSections == "none") {
       c.Options.BBSections = BasicBlockSection::None;
-    else if (config->ltoBasicBlockSections == "profile") {
+    } else if (config->ltoBasicBlockSections == "profile") {
       c.Options.BBSections = BasicBlockSection::Profile;
     } else {
       ErrorOr<std::unique_ptr<MemoryBuffer>> MBOrErr =

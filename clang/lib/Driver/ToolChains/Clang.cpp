@@ -4892,7 +4892,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (Arg *A = Args.getLastArg(options::OPT_fbasicblock_sections_EQ)) {
     StringRef Val = A->getValue();
-    if (Val != "all" && Val != "labels" && Val != "none" &&
+    if (Val != "all" && Val != "labels" && Val != "none" && Val != "profile" &&
         !llvm::sys::fs::exists(Val))
       D.Diag(diag::err_drv_invalid_value)
           << A->getAsString(Args) << A->getValue();

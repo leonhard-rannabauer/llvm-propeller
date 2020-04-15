@@ -330,7 +330,7 @@ static bool assignSectionsAndSortBasicBlocks(
 
 static bool getClusterInfoFromFuncProfile(MachineFunction &MF, const llvm::MachineBlockFrequencyInfo* MBFI,
                                           const llvm::ProfileSummaryInfo* PSI, 
-                                          DenseMap<unsigned, BBClusterInfo>& FuncBBClusterInfo) {
+					  std::vector<Optional<BBClusterInfo>>& FuncBBClusterInfo) {
   FuncBBClusterInfo.clear();
   // We don't want to touch anything which is not already identified as hot.
   auto PrefixOrNone = MF.getFunction().getSectionPrefix();
@@ -338,21 +338,22 @@ static bool getClusterInfoFromFuncProfile(MachineFunction &MF, const llvm::Machi
     return true;
   }
 
+  // errs() << "Function: " << MF.getName() << " " << MF.size() << "\n";
   double Total = 0.0; 
   for (MachineBasicBlock &MBB : MF) {
     Total += MBFI->getBlockFreq(&MBB).getFrequency();
-    // MBFI->printBlockFreq(dbgs(), &MBB);
-    // dbgs() << "\n";
+    // MBFI->printBlockFreq(errs(), &MBB);
+    // errs() << "\n";
   }
 
   auto* Entry = &MF.front();
   unsigned CurrentPosition = 0;  
   for (MachineBasicBlock &MBB : MF) {
     double RelativeFreq = MBFI->getBlockFreq(&MBB).getFrequency()/Total;
-    if (&MBB != Entry && RelativeFreq < 0.0001) {
-      continue;
+    if (&MBB != Entry && RelativeFreq < 0.001) {
+  	continue;    
     }
-    FuncBBClusterInfo.try_emplace(MBB.getNumber(), BBClusterInfo{0, CurrentPosition++ });
+    FuncBBClusterInfo.push_back(BBClusterInfo{static_cast<unsigned int>(MBB.getNumber()), 0, CurrentPosition++ });
   }
 
   return true;

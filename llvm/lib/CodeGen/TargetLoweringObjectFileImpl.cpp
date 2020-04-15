@@ -781,7 +781,7 @@ MCSection *TargetLoweringObjectFileELF::getSectionForMachineBasicBlock(
     Name += ".eh";
     break;
   case MBBSectionID::SectionType::Cold:
-    Name += ".unlikely";
+    Name = (StringRef(".text.unlikely.") + Name.str()).str();
     break;
   // For regular sections, either use a unique name, or a unique ID for the
   // section.

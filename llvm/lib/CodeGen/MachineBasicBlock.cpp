@@ -62,17 +62,32 @@ MCSymbol *MachineBasicBlock::getSymbol() const {
     MCContext &Ctx = MF->getContext();
     auto Prefix = Ctx.getAsmInfo()->getPrivateLabelPrefix();
 
-    // We emit a non-temporary symbol for every basic block if we have BBLabels
-    // or -- with basic block sections -- when a basic block begins a section.
-    bool BasicBlockSymbols = isBeginSection() || MF->hasBBLabels();
-    auto Delimiter = BasicBlockSymbols ? "." : "_";
+    StringRef Delimiter = ".";
     assert(getNumber() >= 0 && "cannot get label for unreachable MBB");
 
-    // With Basic Block Sections, we emit a symbol for every basic block. To
+    errs() << "getSymbol called for: " << MF->getName() <<  "\n"; 
+
+    // We emit a non-temporary symbol for every basic block if we have BBLabels
+    // or -- with basic block sections -- when a basic block begins a section.
+    if (isBeginSection()) {
+	errs() << "begin section\n";
+	auto SectionID = getSectionID();
+	if (SectionID == MBBSectionID::ColdSectionID) {
+	  errs() << "cold section\n";
+	  CachedMCSymbol = Ctx.getOrCreateSymbol(Twine(MF->getName()) + ".cold");
+	} else if (SectionID == MBBSectionID::ExceptionSectionID) {
+	  errs() << "eh section\n";
+	  CachedMCSymbol = Ctx.getOrCreateSymbol(Twine(MF->getName()) + ".eh");
+	} else {
+	  errs() << "regular section\n";
+	  CachedMCSymbol = Ctx.getOrCreateSymbol(Twine(MF->getName()));
+	}
+    }
+    // With BasicBlockSections::Labels, we emit a symbol for every basic block. To
     // keep the size of strtab small, we choose a unary encoding which can
     // compress the symbol names significantly.  The basic blocks for function
     // foo are named a.BB.foo, aa.BB.foo, and so on.
-    if (BasicBlockSymbols) {
+    else if (MF->hasBBLabels()) {
       auto Iter = MF->getBBSectionsSymbolPrefix().begin();
       if (getNumber() < 0 ||
           getNumber() >= (int)MF->getBBSectionsSymbolPrefix().size())
@@ -85,9 +100,10 @@ MCSymbol *MachineBasicBlock::getSymbol() const {
     } else {
       CachedMCSymbol = Ctx.getOrCreateSymbol(
           Twine(Prefix) + "BB" + Twine(MF->getFunctionNumber()) +
-          Twine(Delimiter) + Twine(getNumber()));
+          Twine("_") + Twine(getNumber()));
     }
   }
+  errs() << "cached symbol: " << CachedMCSymbol->getName() << "\n";
   return CachedMCSymbol;
 }
 

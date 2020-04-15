@@ -42,5 +42,9 @@ int main(void)
 		}
 		  
         }
+	// int pid = getpid();
+	// char buffer[100];
+	// snprintf(buffer, 100, "cat /proc/%d/maps", pid); 
+	// system(buffer);
         return 0;
 }

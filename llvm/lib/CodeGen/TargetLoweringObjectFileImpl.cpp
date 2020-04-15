@@ -672,14 +672,21 @@ static MCSectionELF *selectELFSectionForGlobal(
     Name = getSectionPrefixForGlobal(Kind);
   }
 
+  bool HasTextSectionPrefix = false;
   if (const auto *F = dyn_cast<Function>(GO)) {
-    const auto &OptionalPrefix = F->getSectionPrefix();
-    if (OptionalPrefix)
-      Name += *OptionalPrefix;
+    if (!F->TextSectionPrefix.empty()) {
+      Name += ".";
+      Name += F->TextSectionPrefix;
+      HasTextSectionPrefix = true;
+    } else {
+      const auto &OptionalPrefix = F->getSectionPrefix();
+      if (OptionalPrefix)
+        Name += *OptionalPrefix;
+    }
   }
 
   unsigned UniqueID = MCContext::GenericSectionID;
-  if (EmitUniqueSection) {
+  if (EmitUniqueSection && !HasTextSectionPrefix) {
     if (TM.getUniqueSectionNames()) {
       Name.push_back('.');
       TM.getNameWithPrefix(Name, GO, Mang, true /*MayAlwaysUsePrivate*/);
@@ -770,9 +777,9 @@ MCSection *TargetLoweringObjectFileELF::getSectionForMachineBasicBlock(
     const Function &F, const MachineBasicBlock &MBB,
     const TargetMachine &TM) const {
   assert(MBB.isBeginSection() && "Basic block does not start a section!");
-  SmallString<128> Name;
-  Name = (static_cast<MCSectionELF *>(MBB.getParent()->getSection()))
-             ->getSectionName();
+  SmallString<128> Name (".text");
+  //Name = (static_cast<MCSectionELF *>(MBB.getParent()->getSection()))
+  //           ->getSectionName();
   unsigned UniqueID = MCContext::GenericSectionID;
 
   switch (MBB.getSectionID().Type) {
@@ -786,6 +793,11 @@ MCSection *TargetLoweringObjectFileELF::getSectionForMachineBasicBlock(
   // For regular sections, either use a unique name, or a unique ID for the
   // section.
   default:
+    if (!MBB.TextSectionPrefix.empty()) {
+      Name += ".";
+      Name += MBB.TextSectionPrefix;
+      break;
+    }
     if (TM.getUniqueBBSectionNames()) {
       Name += ".";
       Name += MBB.getSymbol()->getName();

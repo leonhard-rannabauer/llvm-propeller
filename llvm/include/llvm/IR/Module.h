@@ -156,6 +156,12 @@ public:
   /// converted result in MFB.
   static bool isValidModFlagBehavior(Metadata *MD, ModFlagBehavior &MFB);
 
+
+  template <typename Comp>
+  void sort(Comp comp) {
+    FunctionList.sort(comp);
+  }
+
   struct ModuleFlagEntry {
     ModFlagBehavior Behavior;
     MDString *Key;

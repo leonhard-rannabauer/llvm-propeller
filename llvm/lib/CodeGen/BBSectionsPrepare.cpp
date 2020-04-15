@@ -80,6 +80,8 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Target/TargetMachine.h"
 
+#include <map>
+
 using llvm::SmallSet;
 using llvm::SmallVector;
 using llvm::StringMap;
@@ -100,6 +102,8 @@ struct BBClusterInfo {
 
 using ProgramBBClusterInfoMapTy = StringMap<SmallVector<BBClusterInfo, 4>>;
 
+using ProgramClusterLayoutInfoMapTy = StringMap<SmallVector<unsigned, 4>>;
+
 class BBSectionsPrepare : public MachineFunctionPass {
 public:
   static char ID;
@@ -115,9 +119,17 @@ public:
   // cluster.
   ProgramBBClusterInfoMapTy ProgramBBClusterInfo;
 
+  ProgramClusterLayoutInfoMapTy ProgramClusterLayoutInfo;
+
+  std::vector<std::pair<std::string, unsigned>> Layout;
+
   // Some functions have alias names. We use this map to find the main alias
   // name for which we have mapping in ProgramBBClusterInfo.
   StringMap<StringRef> FuncAliasMap;
+
+  StringMap<unsigned> FuncOrder;
+
+  std::map<std::pair<StringRef, unsigned>, std::string> TextSectionPrefix;
 
   BBSectionsPrepare(const MemoryBuffer *Buf)
       : MachineFunctionPass(ID), MBuf(Buf) {
@@ -228,7 +240,11 @@ static bool getBBClusterInfoForFunction(
 // is empty, it means unique sections for all basic blocks in the function.
 static bool assignSectionsAndSortBasicBlocks(
     MachineFunction &MF,
-    const std::vector<Optional<BBClusterInfo>> &FuncBBClusterInfo) {
+    StringMap<unsigned> &FuncOrder,
+    ProgramClusterLayoutInfoMapTy &ProgramClusterLayoutInfo,
+    std::vector<std::pair<std::string,unsigned>> &Layout,
+    const std::vector<Optional<BBClusterInfo>> &FuncBBClusterInfo,
+    std::map<std::pair<StringRef, unsigned>, std::string >& TextSectionPrefix) {
   assert(MF.hasBBSections() && "BB Sections is not set for function.");
   // This variable stores the section ID of the cluster containing eh_pads (if
   // all eh_pads are one cluster). If more than one cluster contain eh_pads, we
@@ -316,6 +332,28 @@ static bool assignSectionsAndSortBasicBlocks(
   // Set IsBeginSection and IsEndSection according to the assigned section IDs.
   MF.assignBeginEndSections();
 
+  for(auto &MBB: MF) {
+    if (MBB.isBeginSection() && MBB.getSectionID().Type == MBBSectionID::Default) {
+      auto LI = ProgramClusterLayoutInfo[MF.getName()][MBB.getSectionID().Number];
+      if (LI)
+        errs() << "Previous one is " << Layout[LI-1].first << "*" << Layout[LI-1].second << "\n";
+      if (LI && FuncOrder.count(Layout[LI-1].first) && FuncOrder.lookup(MF.getName()) > FuncOrder.lookup(Layout[LI-1].first)) {
+        errs() << "Piggy back : " << Layout[LI].first << "*" << Layout[LI].second << " ----> " << Layout[LI-1].first << "*" << Layout[LI-1].second << "\n";
+        assert(TextSectionPrefix.count(Layout[LI-1]));
+        TextSectionPrefix[Layout[LI]] = MBB.TextSectionPrefix = TextSectionPrefix[Layout[LI-1]];
+        if (MBB.pred_empty())
+          const_cast<Function*>(&MBB.getParent()->getFunction())->TextSectionPrefix = MBB.TextSectionPrefix;
+      } else {
+        std::string Prefix(MF.getName());
+        Prefix += ".";
+        Prefix += std::to_string(MBB.getSectionID().Number);
+        TextSectionPrefix[Layout[LI]] = MBB.TextSectionPrefix = Prefix;
+        if (MBB.pred_empty())
+          const_cast<Function*>(&MBB.getParent()->getFunction())->TextSectionPrefix = MBB.TextSectionPrefix;
+      }
+    }
+  }
+
   // After reordering basic blocks, we must update basic block branches to
   // insert explicit fallthrough branches when required and optimize branches
   // when possible.
@@ -347,7 +385,7 @@ bool BBSectionsPrepare::runOnMachineFunction(MachineFunction &MF) {
     return true;
   MF.setBBSectionsType(BBSectionsType);
   MF.createBBLabels();
-  assignSectionsAndSortBasicBlocks(MF, FuncBBClusterInfo);
+  assignSectionsAndSortBasicBlocks(MF, FuncOrder, ProgramClusterLayoutInfo, Layout, FuncBBClusterInfo, TextSectionPrefix);
   return true;
 }
 
@@ -366,6 +404,7 @@ bool BBSectionsPrepare::runOnMachineFunction(MachineFunction &MF) {
 // !!4
 static Error getBBClusterInfo(const MemoryBuffer *MBuf,
                               ProgramBBClusterInfoMapTy &ProgramBBClusterInfo,
+                              ProgramClusterLayoutInfoMapTy &ProgramClusterLayoutInfo,
                               StringMap<StringRef> &FuncAliasMap) {
   assert(MBuf);
   line_iterator LineIt(*MBuf, /*SkipBlanks=*/true, /*CommentMarker=*/'#');
@@ -378,6 +417,7 @@ static Error getBBClusterInfo(const MemoryBuffer *MBuf,
   };
 
   auto FI = ProgramBBClusterInfo.end();
+  auto FLI = ProgramClusterLayoutInfo.end();
 
   // Current cluster ID corresponding to this function.
   unsigned CurrentCluster = 0;
@@ -400,8 +440,12 @@ static Error getBBClusterInfo(const MemoryBuffer *MBuf,
       if (FI == ProgramBBClusterInfo.end())
         return invalidProfileError(
             "Cluster list does not follow a function name specifier.");
+      auto R = S.split(' ');
+      unsigned long long ClusterLayoutIndex = 0;
+      getAsUnsignedInteger(R.first, 10, ClusterLayoutIndex);
+      FLI->second.emplace_back(ClusterLayoutIndex);
       SmallVector<StringRef, 4> BBIndexes;
-      S.split(BBIndexes, ' ');
+      R.second.split(BBIndexes, ' ');
       // Reset current cluster position.
       CurrentPosition = 0;
       for (auto BBIndexStr : BBIndexes) {
@@ -419,7 +463,8 @@ static Error getBBClusterInfo(const MemoryBuffer *MBuf,
             ((unsigned)BBIndex), CurrentCluster, CurrentPosition++});
       }
       CurrentCluster++;
-    } else { // This is a function name specifier.
+    } else {
+      // This is a function name specifier.
       // Function aliases are separated using '/'. We use the first function
       // name for the cluster info mapping and delegate all other aliases to
       // this one.
@@ -431,6 +476,7 @@ static Error getBBClusterInfo(const MemoryBuffer *MBuf,
       // Prepare for parsing clusters of this function name.
       // Start a new cluster map for this function name.
       FI = ProgramBBClusterInfo.try_emplace(Aliases.front()).first;
+      FLI = ProgramClusterLayoutInfo.try_emplace(Aliases.front()).first;
       CurrentCluster = 0;
       FuncBBIDs.clear();
     }
@@ -441,9 +487,72 @@ static Error getBBClusterInfo(const MemoryBuffer *MBuf,
 bool BBSectionsPrepare::doInitialization(Module &M) {
   if (!MBuf)
     return false;
-  if (auto Err = getBBClusterInfo(MBuf, ProgramBBClusterInfo, FuncAliasMap))
+  if (auto Err = getBBClusterInfo(MBuf, ProgramBBClusterInfo, ProgramClusterLayoutInfo, FuncAliasMap))
     report_fatal_error(std::move(Err));
-  return false;
+  SmallSet<StringRef, 32> FuncNames;
+  for (Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    FuncNames.insert(F.getName());
+  }
+
+  for(auto &Elem: ProgramClusterLayoutInfo)
+    for(unsigned i=0; i<Elem.second.size(); i++) {
+      if (Layout.size() < Elem.second[i]+1)
+        Layout.resize(Elem.second[i]+1);
+      Layout[Elem.second[i]] = std::make_pair(Elem.first().str(), i);
+    }
+
+  StringMap<SmallSet<StringRef, 32>> ComesAfter;
+  StringMap<SmallSet<StringRef, 32>> ComesBefore;
+  for(auto &FN: FuncNames) {
+    ComesAfter[FN].insert(FN);
+    ComesBefore[FN].insert(FN);
+  }
+
+  auto PrevI = ComesBefore.end();
+  for (auto L: Layout) {
+    if (!FuncNames.count(L.first)) {
+      PrevI = ComesBefore.end();
+      continue;
+    }
+    if (PrevI == ComesBefore.end() || PrevI->second.count(L.first) || ComesAfter[PrevI->first()].count(L.first)) {
+      PrevI = ComesBefore.find(L.first);
+      continue;
+    }
+
+    for(auto &A: ComesAfter[L.first])
+      for(auto &B: PrevI->second) {
+        ComesAfter[B].insert(A);
+        ComesBefore[A].insert(B);
+      }
+    PrevI = ComesBefore.find(L.first);
+  }
+
+  unsigned OrderN = 0;
+  while (FuncOrder.size() < FuncNames.size()) {
+    for(auto &F: M) {
+      if (F.isDeclaration())
+        continue;
+      if (FuncOrder.count(F.getName()))
+        continue;
+      if (ComesBefore[F.getName()].size() == 1) {
+        FuncOrder.try_emplace(F.getName(), OrderN++);
+        for (auto &A: ComesAfter[F.getName()])
+          ComesBefore[A].erase(F.getName());
+      }
+    }
+  }
+
+  M.sort([&](const Function &LHS, const Function &RHS) {
+    if (LHS.isDeclaration() && RHS.isDeclaration())
+      return false;
+    if (LHS.isDeclaration() || RHS.isDeclaration())
+      return LHS.isDeclaration();
+    return FuncOrder[LHS.getName()] < FuncOrder[RHS.getName()];
+  });
+
+  return true;
 }
 
 void BBSectionsPrepare::getAnalysisUsage(AnalysisUsage &AU) const {

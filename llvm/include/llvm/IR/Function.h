@@ -67,6 +67,8 @@ public:
   using arg_iterator = Argument *;
   using const_arg_iterator = const Argument *;
 
+  StringRef TextSectionPrefix;
+
 private:
   // Important things that make up a function!
   BasicBlockListType BasicBlocks;         ///< The basic blocks

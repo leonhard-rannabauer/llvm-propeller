@@ -105,6 +105,7 @@ public:
 class MachineBasicBlock
     : public ilist_node_with_parent<MachineBasicBlock, MachineFunction> {
 public:
+ std::string TextSectionPrefix;
   /// Pair of physical register and lane mask.
   /// This is not simply a std::pair typedef because the members should be named
   /// clearly as they both have an integer type.

@@ -395,8 +395,9 @@ void MCStreamer::AssignFragment(MCSymbol *Symbol, MCFragment *Fragment) {
 void MCStreamer::emitLabel(MCSymbol *Symbol, SMLoc Loc) {
   Symbol->redefineIfPossible();
 
-  if (!Symbol->isUndefined() || Symbol->isVariable())
+  if (!Symbol->isUndefined() || Symbol->isVariable()) {
     return getContext().reportError(Loc, "invalid symbol redefinition");
+  }
 
   assert(!Symbol->isVariable() && "Cannot emit a variable symbol!");
   assert(getCurrentSectionOnly() && "Cannot emit before setting section!");

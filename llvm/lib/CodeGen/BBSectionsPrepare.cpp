@@ -338,22 +338,21 @@ static bool getClusterInfoFromFuncProfile(MachineFunction &MF, const llvm::Machi
     return true;
   }
 
-  // errs() << "Function: " << MF.getName() << " " << MF.size() << "\n";
   double Total = 0.0; 
   for (MachineBasicBlock &MBB : MF) {
     Total += MBFI->getBlockFreq(&MBB).getFrequency();
-    // MBFI->printBlockFreq(errs(), &MBB);
-    // errs() << "\n";
   }
 
   auto* Entry = &MF.front();
   unsigned CurrentPosition = 0;  
+  FuncBBClusterInfo.resize(MF.getNumBlockIDs());
   for (MachineBasicBlock &MBB : MF) {
     double RelativeFreq = MBFI->getBlockFreq(&MBB).getFrequency()/Total;
     if (&MBB != Entry && RelativeFreq < 0.001) {
   	continue;    
     }
-    FuncBBClusterInfo.push_back(BBClusterInfo{static_cast<unsigned int>(MBB.getNumber()), 0, CurrentPosition++ });
+    unsigned int idx = MBB.getNumber();
+    FuncBBClusterInfo[idx] = BBClusterInfo{idx, 0, CurrentPosition++};
   }
 
   return true;

@@ -9,6 +9,8 @@
 import copy
 import errno
 import os
+import shutil
+import tempfile
 import time
 import random
 
@@ -44,8 +46,6 @@ class LibcxxTestFormat(object):
     @staticmethod
     def _make_custom_parsers(test):
         return [
-            IntegratedTestKeywordParser('MODULES_DEFINES:', ParserKind.LIST,
-                                        initial_value=[]),
             IntegratedTestKeywordParser('FILE_DEPENDENCIES:', ParserKind.LIST,
                                         initial_value=test.file_dependencies),
             IntegratedTestKeywordParser('ADDITIONAL_COMPILE_FLAGS:', ParserKind.LIST,
@@ -130,23 +130,19 @@ class LibcxxTestFormat(object):
 
         # Apply substitutions in FILE_DEPENDENCIES markup
         data_files = lit.TestRunner.applySubstitutions(test.file_dependencies, substitutions,
-                                                       recursion_limit=10)
+                                                       recursion_limit=test.config.recursiveExpansionLimit)
         local_cwd = os.path.dirname(test.getSourcePath())
         data_files = [f if os.path.isabs(f) else os.path.join(local_cwd, f) for f in data_files]
         substitutions.append(('%{file_dependencies}', ' '.join(data_files)))
 
         script = lit.TestRunner.applySubstitutions(script, substitutions,
-                                                   recursion_limit=10)
+                                                   recursion_limit=test.config.recursiveExpansionLimit)
 
         test_cxx = copy.deepcopy(self.cxx)
         if is_fail_test:
             test_cxx.useCCache(False)
             test_cxx.useWarnings(False)
-        extra_modules_defines = self._get_parser('MODULES_DEFINES:',
-                                                 parsers).getValue()
         if '-fmodules' in test.config.available_features:
-            test_cxx.compile_flags += [('-D%s' % mdef.strip()) for
-                                       mdef in extra_modules_defines]
             test_cxx.addWarningFlagIfSupported('-Wno-macro-redefined')
             # FIXME: libc++ debug tests #define _LIBCPP_ASSERT to override it
             # If we see this we need to build the test against uniquely built
@@ -209,16 +205,21 @@ class LibcxxTestFormat(object):
                 report += "Compilation failed unexpectedly!"
                 return lit.Test.Result(lit.Test.FAIL, report)
             # Run the test
-            local_cwd = os.path.dirname(source_path)
             env = None
             if self.exec_env:
                 env = self.exec_env
 
             max_retry = test.allowed_retries + 1
             for retry_count in range(max_retry):
-                cmd, out, err, rc = self.executor.run(exec_path, [exec_path],
-                                                      local_cwd, data_files,
-                                                      env)
+                # Create a temporary directory just for that test and run the
+                # test in that directory
+                try:
+                    execDirTmp = tempfile.mkdtemp(dir=execDir)
+                    cmd, out, err, rc = self.executor.run(exec_path, [exec_path],
+                                                          execDirTmp, data_files,
+                                                          env)
+                finally:
+                    shutil.rmtree(execDirTmp)
                 report = "Compiled With: '%s'\n" % ' '.join(compile_cmd)
                 report += libcxx.util.makeReport(cmd, out, err, rc)
                 if rc == 0:
@@ -245,12 +246,7 @@ class LibcxxTestFormat(object):
                        b'expected-no-diagnostics']
         use_verify = self.use_verify_for_fail and \
                      any([tag in contents for tag in verify_tags])
-        # FIXME(EricWF): GCC 5 does not evaluate static assertions that
-        # are dependant on a template parameter when '-fsyntax-only' is passed.
-        # This is fixed in GCC 6. However for now we only pass "-fsyntax-only"
-        # when using Clang.
-        if test_cxx.type != 'gcc':
-            test_cxx.flags += ['-fsyntax-only']
+        test_cxx.flags += ['-fsyntax-only']
         if use_verify:
             test_cxx.useVerify()
         cmd, out, err, rc = test_cxx.compile(source_path, out=os.devnull)

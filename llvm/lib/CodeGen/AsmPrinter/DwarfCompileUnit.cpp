@@ -351,8 +351,6 @@ void DwarfCompileUnit::initStmtList() {
   if (CUNode->isDebugDirectivesOnly())
     return;
 
-  // Define start line table label for each Compile Unit.
-  MCSymbol *LineTableStartSym;
   const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
   if (DD->useSectionsAsReferences()) {
     LineTableStartSym = TLOF.getDwarfLineSection()->getBeginSymbol();
@@ -366,13 +364,14 @@ void DwarfCompileUnit::initStmtList() {
   // left in the skeleton CU and so not included.
   // The line table entries are not always emitted in assembly, so it
   // is not okay to use line_table_start here.
-  StmtListValue =
       addSectionLabel(getUnitDie(), dwarf::DW_AT_stmt_list, LineTableStartSym,
                       TLOF.getDwarfLineSection()->getBeginSymbol());
 }
 
 void DwarfCompileUnit::applyStmtList(DIE &D) {
-  D.addValue(DIEValueAllocator, *StmtListValue);
+  const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
+  addSectionLabel(D, dwarf::DW_AT_stmt_list, LineTableStartSym,
+                  TLOF.getDwarfLineSection()->getBeginSymbol());
 }
 
 void DwarfCompileUnit::attachLowHighPC(DIE &D, const MCSymbol *Begin,
@@ -399,14 +398,18 @@ DIE &DwarfCompileUnit::updateSubprogramScopeDIE(const DISubprogram *SP) {
     attachLowHighPC(*SPDie, Asm->getFunctionBegin(), Asm->getFunctionEnd());
   else {
     SmallVector<RangeSpan, 2> BB_List;
+
     BB_List.push_back({Asm->getFunctionBegin(), Asm->getFunctionEnd()});
-    // If basic block sections are on, only the entry BB and exception
-    // handling BBs will be in the [getFunctionBegin(), getFunctionEnd()]
-    // range. Ranges for the other BBs have to be emitted separately.
-    for (auto &MBB : *Asm->MF) {
-      if (!MBB.pred_empty() && MBB.isBeginSection()) {
-        BB_List.push_back(
-            {MBB.getSymbol(), MBB.getSectionEndMBB()->getEndMCSymbol()});
+    // If basic block sections are on, the [getFunctionBegin(),
+    // getFunctionEnd()] range will include all BBs which are in the same
+    // section as the entry block. Ranges for the other BBs have to be emitted
+    // separately.
+    if (Asm->MF->hasBBSections()) {
+      for (auto &MBB : *Asm->MF) {
+        if (&MBB != &Asm->MF->front() && MBB.isBeginSection())
+          BB_List.push_back(
+              {MBB.getSymbol(),
+               Asm->MBBSectionRanges[MBB.getSectionID().toIndex()].EndLabel});
       }
     }
     attachRangesOrLowHighPC(*SPDie, BB_List);
@@ -512,7 +515,6 @@ void DwarfCompileUnit::constructScopeDIE(
 
 void DwarfCompileUnit::addScopeRangeList(DIE &ScopeDIE,
                                          SmallVector<RangeSpan, 2> Range) {
-
   HasRangeLists = true;
 
   // Add the range list to the set of ranges to be emitted.
@@ -573,19 +575,27 @@ void DwarfCompileUnit::attachRangesOrLowHighPC(
 
     assert(!BeginMBB->sameSection(EndMBB) &&
            "BeginMBB and EndMBB are in the same section!");
-    const auto *MBBInSection = BeginMBB->getSectionEndMBB();
-    List.push_back({BeginLabel, MBBInSection->getEndMCSymbol()});
-    MBBInSection = MBBInSection->getNextNode();
-    while (!MBBInSection->sameSection(EndMBB)) {
-      assert(MBBInSection->isBeginSection() &&
+    List.push_back(
+        {BeginLabel,
+         Asm->MBBSectionRanges[BeginMBB->getSectionID().toIndex()].EndLabel});
+    const auto *NextSectionMBB = BeginMBB->getNextNode();
+    while (NextSectionMBB->sameSection(BeginMBB))
+      NextSectionMBB = NextSectionMBB->getNextNode();
+    while (NextSectionMBB && !NextSectionMBB->sameSection(EndMBB)) {
+      assert(NextSectionMBB->isBeginSection() &&
              "This should start a new section.");
-      List.push_back({MBBInSection->getSymbol(),
-                      MBBInSection->getSectionEndMBB()->getEndMCSymbol()});
-      MBBInSection = MBBInSection->getSectionEndMBB()->getNextNode();
+      List.push_back(
+          {NextSectionMBB->getSymbol(),
+           Asm->MBBSectionRanges[NextSectionMBB->getSectionID().toIndex()]
+               .EndLabel});
+      const auto *NextNextSectionMBB = NextSectionMBB->getNextNode();
+      while (NextNextSectionMBB->sameSection(NextSectionMBB))
+        NextNextSectionMBB = NextNextSectionMBB->getNextNode();
+      NextSectionMBB = NextNextSectionMBB;
     }
 
-    assert(MBBInSection->sameSection(EndMBB));
-    List.push_back({MBBInSection->getSymbol(), EndLabel});
+    assert(NextSectionMBB->sameSection(EndMBB));
+    List.push_back({NextSectionMBB->getSymbol(), EndLabel});
   }
   attachRangesOrLowHighPC(Die, std::move(List));
 }
@@ -717,7 +727,7 @@ DIE *DwarfCompileUnit::constructVariableDIEImpl(const DbgVariable &DV,
   DIELoc *Loc = new (DIEValueAllocator) DIELoc;
   DIEDwarfExpression DwarfExpr(*Asm, *this, *Loc);
   for (auto &Fragment : DV.getFrameIndexExprs()) {
-    unsigned FrameReg = 0;
+    Register FrameReg;
     const DIExpression *Expr = Fragment.Expr;
     const TargetFrameLowering *TFI = Asm->MF->getSubtarget().getFrameLowering();
     int Offset = TFI->getFrameIndexReference(*Asm->MF, Fragment.FI, FrameReg);

@@ -1066,9 +1066,9 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST_,
           GlobalPtr, LocalPtr, FlatPtr, PrivatePtr,
           LLT::vector(2, LocalPtr), LLT::vector(2, PrivatePtr)}, {S1, S32})
     .clampScalar(0, S16, S64)
+    .scalarize(1)
     .moreElementsIf(isSmallOddVector(0), oneMoreElement(0))
     .fewerElementsIf(numElementsNotEven(0), scalarize(0))
-    .scalarize(1)
     .clampMaxNumElements(0, S32, 2)
     .clampMaxNumElements(0, LocalPtr, 2)
     .clampMaxNumElements(0, PrivatePtr, 2)
@@ -1082,12 +1082,22 @@ AMDGPULegalizerInfo::AMDGPULegalizerInfo(const GCNSubtarget &ST_,
     .legalFor({{S32, S32}, {S64, S32}});
   if (ST.has16BitInsts()) {
     if (ST.hasVOP3PInsts()) {
-      Shifts.legalFor({{S16, S32}, {S16, S16}, {V2S16, V2S16}})
+      Shifts.legalFor({{S16, S16}, {V2S16, V2S16}})
             .clampMaxNumElements(0, S16, 2);
     } else
-      Shifts.legalFor({{S16, S32}, {S16, S16}});
+      Shifts.legalFor({{S16, S16}});
 
-    // TODO: Support 16-bit shift amounts
+    // TODO: Support 16-bit shift amounts for all types
+    Shifts.widenScalarIf(
+      [=](const LegalityQuery &Query) {
+        // Use 16-bit shift amounts for any 16-bit shift. Otherwise we want a
+        // 32-bit amount.
+        const LLT ValTy = Query.Types[0];
+        const LLT AmountTy = Query.Types[1];
+        return ValTy.getSizeInBits() <= 16 &&
+               AmountTy.getSizeInBits() < 16;
+      }, changeTo(1, S16));
+    Shifts.maxScalarIf(typeIs(0, S16), 1, S16);
     Shifts.clampScalar(1, S32, S32);
     Shifts.clampScalar(0, S16, S64);
     Shifts.widenScalarToNextPow2(0, 16);
@@ -3717,19 +3727,24 @@ bool AMDGPULegalizerInfo::legalizeImageIntrinsic(
   int CorrectedNumVAddrs = NumVAddrs;
 
   // Optimize _L to _LZ when _L is zero
-  if (AMDGPU::getMIMGLZMappingInfo(ImageDimIntr->BaseOpcode)) {
+  if (const AMDGPU::MIMGLZMappingInfo *LZMappingInfo =
+        AMDGPU::getMIMGLZMappingInfo(ImageDimIntr->BaseOpcode)) {
     const ConstantFP *ConstantLod;
     const int LodIdx = AddrIdx + NumVAddrs - 1;
 
-    // FIXME: This isn't the cleanest way to handle this, but it's the easiest
-    // option the current infrastructure gives. We really should be changing the
-    // base intrinsic opcode, but the current searchable tables only gives us
-    // the final MI opcode. Eliminate the register here, and track with an
-    // immediate 0 so the final selection will know to do the opcode change.
     if (mi_match(MI.getOperand(LodIdx).getReg(), *MRI, m_GFCst(ConstantLod))) {
       if (ConstantLod->isZero() || ConstantLod->isNegative()) {
-        MI.getOperand(LodIdx).ChangeToImmediate(0);
+        // Set new opcode to _lz variant of _l, and change the intrinsic ID.
+        ImageDimIntr = AMDGPU::getImageDimInstrinsicByBaseOpcode(
+          LZMappingInfo->LZ, ImageDimIntr->Dim);
+
+        // The starting indexes should remain in the same place.
+        --NumVAddrs;
         --CorrectedNumVAddrs;
+
+        MI.getOperand(MI.getNumExplicitDefs()).setIntrinsicID(
+          static_cast<Intrinsic::ID>(ImageDimIntr->Intr));
+        MI.RemoveOperand(LodIdx);
       }
     }
   }
@@ -3741,6 +3756,8 @@ bool AMDGPULegalizerInfo::legalizeImageIntrinsic(
 
     if (mi_match(MI.getOperand(LodIdx).getReg(), *MRI, m_ICst(ConstantLod))) {
       if (ConstantLod == 0) {
+        // TODO: Change intrinsic opcode and remove operand instead or replacing
+        // it with 0, as the _L to _LZ handling is done above.
         MI.getOperand(LodIdx).ChangeToImmediate(0);
         --CorrectedNumVAddrs;
       }

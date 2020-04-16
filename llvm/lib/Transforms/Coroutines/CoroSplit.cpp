@@ -941,11 +941,7 @@ static bool simplifyTerminatorLeadingToRet(Instruction *InitialInst) {
         // If InitialInst is an unconditional branch,
         // remove PHI values that come from basic block of InitialInst
         if (UnconditionalSucc)
-          for (PHINode &PN : UnconditionalSucc->phis()) {
-            int idx = PN.getBasicBlockIndex(InitialInst->getParent());
-            if (idx != -1)
-              PN.removeIncomingValue(idx);
-          }
+          UnconditionalSucc->removePredecessor(InitialInst->getParent(), true);
         ReplaceInstWithInst(InitialInst, I->clone());
       }
       return true;
@@ -1019,9 +1015,9 @@ static bool shouldBeMustTail(const CallInst &CI, const Function &F) {
 
   // CI should not has any ABI-impacting function attributes.
   static const Attribute::AttrKind ABIAttrs[] = {
-      Attribute::StructRet,  Attribute::ByVal,    Attribute::InAlloca,
-      Attribute::InReg,      Attribute::Returned, Attribute::SwiftSelf,
-      Attribute::SwiftError, Attribute::Alignment};
+      Attribute::StructRet, Attribute::ByVal,    Attribute::InAlloca,
+      Attribute::InReg,     Attribute::Returned, Attribute::SwiftSelf,
+      Attribute::SwiftError};
   AttributeList Attrs = CI.getAttributes();
   for (auto AK : ABIAttrs)
     if (Attrs.hasParamAttribute(0, AK))

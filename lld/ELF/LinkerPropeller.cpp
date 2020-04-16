@@ -101,12 +101,12 @@ void doPropeller() {
 
   std::vector<ObjectView *> objectViews;
   std::for_each(objectFiles.begin(), objectFiles.end(),
-                [&objectViews](const InputFile *inf) {
-                  auto *ov = Propeller::createObjectView(
-                      inf->getName(), objectViews.size() + 1, inf->mb);
-                  if (ov)
-                    objectViews.push_back(ov);
-                });
+                 [&objectViews](const InputFile *inf) {
+                   auto *ov = Propeller::createObjectView(
+                       inf->getName(), objectViews.size() + 1, inf->mb);
+                   if (ov)
+                     objectViews.push_back(ov);
+                 });
   if (prop->processFiles(objectViews))
     config->symbolOrderingFile = prop->genSymbolOrderingFile();
   else

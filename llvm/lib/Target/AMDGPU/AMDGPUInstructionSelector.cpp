@@ -800,6 +800,40 @@ bool AMDGPUInstructionSelector::selectInterpP1F16(MachineInstr &MI) const {
   return true;
 }
 
+// We need to handle this here because tablegen doesn't support matching
+// instructions with multiple outputs.
+bool AMDGPUInstructionSelector::selectDivScale(MachineInstr &MI) const {
+  Register Dst0 = MI.getOperand(0).getReg();
+  Register Dst1 = MI.getOperand(1).getReg();
+
+  LLT Ty = MRI->getType(Dst0);
+  unsigned Opc;
+  if (Ty == LLT::scalar(32))
+    Opc = AMDGPU::V_DIV_SCALE_F32;
+  else if (Ty == LLT::scalar(64))
+    Opc = AMDGPU::V_DIV_SCALE_F64;
+  else
+    return false;
+
+  const DebugLoc &DL = MI.getDebugLoc();
+  MachineBasicBlock *MBB = MI.getParent();
+
+  Register Numer = MI.getOperand(3).getReg();
+  Register Denom = MI.getOperand(4).getReg();
+  unsigned ChooseDenom = MI.getOperand(5).getImm();
+
+  Register Src0 = ChooseDenom != 0 ? Numer : Denom;
+
+  auto MIB = BuildMI(*MBB, &MI, DL, TII.get(Opc), Dst0)
+    .addDef(Dst1)
+    .addUse(Src0)
+    .addUse(Denom)
+    .addUse(Numer);
+
+  MI.eraseFromParent();
+  return constrainSelectedInstRegOperands(*MIB, TII, TRI, RBI);
+}
+
 bool AMDGPUInstructionSelector::selectG_INTRINSIC(MachineInstr &I) const {
   unsigned IntrinsicID = I.getIntrinsicID();
   switch (IntrinsicID) {
@@ -832,6 +866,8 @@ bool AMDGPUInstructionSelector::selectG_INTRINSIC(MachineInstr &I) const {
     return constrainCopyLikeIntrin(I, AMDGPU::SOFT_WQM);
   case Intrinsic::amdgcn_wwm:
     return constrainCopyLikeIntrin(I, AMDGPU::WWM);
+  case Intrinsic::amdgcn_div_scale:
+    return selectDivScale(I);
   default:
     return selectImpl(I, *CoverageInfo);
   }
@@ -2826,7 +2862,8 @@ AMDGPUInstructionSelector::selectSmrdImm(MachineOperand &Root) const {
     return None;
 
   const GEPInfo &GEPInfo = AddrInfo[0];
-  Optional<int64_t> EncodedImm = AMDGPU::getSMRDEncodedOffset(STI, GEPInfo.Imm);
+  Optional<int64_t> EncodedImm =
+      AMDGPU::getSMRDEncodedOffset(STI, GEPInfo.Imm, false);
   if (!EncodedImm)
     return None;
 
@@ -2872,7 +2909,8 @@ AMDGPUInstructionSelector::selectSmrdSgpr(MachineOperand &Root) const {
     return None;
 
   const GEPInfo &GEPInfo = AddrInfo[0];
-  if (!GEPInfo.Imm || !isUInt<32>(GEPInfo.Imm))
+  // SGPR offset is unsigned.
+  if (!GEPInfo.Imm || GEPInfo.Imm < 0 || !isUInt<32>(GEPInfo.Imm))
     return None;
 
   // If we make it this far we have a load with an 32-bit immediate offset.
@@ -3512,7 +3550,8 @@ AMDGPUInstructionSelector::selectSMRDBufferImm(MachineOperand &Root) const {
   if (!OffsetVal)
     return {};
 
-  Optional<int64_t> EncodedImm = AMDGPU::getSMRDEncodedOffset(STI, *OffsetVal);
+  Optional<int64_t> EncodedImm =
+      AMDGPU::getSMRDEncodedOffset(STI, *OffsetVal, true);
   if (!EncodedImm)
     return {};
 

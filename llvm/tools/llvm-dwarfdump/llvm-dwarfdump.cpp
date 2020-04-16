@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm-dwarfdump.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Triple.h"
@@ -29,10 +30,13 @@
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cstdlib>
 
 using namespace llvm;
-using namespace object;
+using namespace llvm::dwarfdump;
+using namespace llvm::object;
 
+namespace {
 /// Parser for options that take an optional offest argument.
 /// @{
 struct OffsetOption {
@@ -40,6 +44,7 @@ struct OffsetOption {
   bool HasValue = false;
   bool IsRequested = false;
 };
+} // namespace
 
 namespace llvm {
 namespace cl {
@@ -81,8 +86,8 @@ public:
   // An out-of-line virtual method to provide a 'home' for this class.
   void anchor() override {};
 };
-} // cl
-} // llvm
+} // namespace cl
+} // namespace llvm
 
 /// @}
 /// Command line options.
@@ -208,6 +213,11 @@ static cl::opt<bool>
     Statistics("statistics",
                cl::desc("Emit JSON-formatted debug info quality metrics."),
                cat(DwarfDumpCategory));
+static cl::opt<bool>
+    ShowSectionSizes("show-section-sizes",
+                     cl::desc("Show the sizes of all debug sections, "
+                              "expressed in bytes."),
+                     cat(DwarfDumpCategory));
 static opt<bool> Verify("verify", desc("Verify the DWARF debug info."),
                         cat(DwarfDumpCategory));
 static opt<bool> Quiet("quiet", desc("Use with -verify to not emit to STDOUT."),
@@ -410,9 +420,6 @@ static bool lookup(ObjectFile &Obj, DWARFContext &DICtx, uint64_t Address,
   return true;
 }
 
-bool collectStatsForObjectFile(ObjectFile &Obj, DWARFContext &DICtx,
-                               const Twine &Filename, raw_ostream &OS);
-
 static bool dumpObjectFile(ObjectFile &Obj, DWARFContext &DICtx,
                            const Twine &Filename, raw_ostream &OS) {
   logAllUnhandledErrors(DICtx.loadRegisterInfo(Obj), errs(),
@@ -488,10 +495,15 @@ static bool handleBuffer(StringRef Filename, MemoryBufferRef Buffer,
   error(Filename, errorToErrorCode(BinOrErr.takeError()));
 
   bool Result = true;
+  auto RecoverableErrorHandler = [&](Error E) {
+    Result = false;
+    WithColor::defaultErrorHandler(std::move(E));
+  };
   if (auto *Obj = dyn_cast<ObjectFile>(BinOrErr->get())) {
     if (filterArch(*Obj)) {
-      std::unique_ptr<DWARFContext> DICtx = DWARFContext::create(*Obj);
-      Result = HandleObj(*Obj, *DICtx, Filename, OS);
+      std::unique_ptr<DWARFContext> DICtx =
+          DWARFContext::create(*Obj, nullptr, "", RecoverableErrorHandler);
+      Result &= HandleObj(*Obj, *DICtx, Filename, OS);
     }
   }
   else if (auto *Fat = dyn_cast<MachOUniversalBinary>(BinOrErr->get()))
@@ -501,7 +513,8 @@ static bool handleBuffer(StringRef Filename, MemoryBufferRef Buffer,
       if (auto MachOOrErr = ObjForArch.getAsObjectFile()) {
         auto &Obj = **MachOOrErr;
         if (filterArch(Obj)) {
-          std::unique_ptr<DWARFContext> DICtx = DWARFContext::create(Obj);
+          std::unique_ptr<DWARFContext> DICtx =
+              DWARFContext::create(Obj, nullptr, "", RecoverableErrorHandler);
           Result &= HandleObj(Obj, *DICtx, ObjName, OS);
         }
         continue;
@@ -629,18 +642,20 @@ int main(int argc, char **argv) {
     Objects.insert(Objects.end(), Objs.begin(), Objs.end());
   }
 
+  bool Success = true;
   if (Verify) {
-    // If we encountered errors during verify, exit with a non-zero exit status.
-    if (!all_of(Objects, [&](std::string Object) {
-          return handleFile(Object, verifyObjectFile, OutputFile.os());
-        }))
-      return 1;
-  } else if (Statistics)
     for (auto Object : Objects)
-      handleFile(Object, collectStatsForObjectFile, OutputFile.os());
-  else
+      Success &= handleFile(Object, verifyObjectFile, OutputFile.os());
+  } else if (Statistics) {
     for (auto Object : Objects)
-      handleFile(Object, dumpObjectFile, OutputFile.os());
+      Success &= handleFile(Object, collectStatsForObjectFile, OutputFile.os());
+  } else if (ShowSectionSizes) {
+    for (auto Object : Objects)
+      Success &= handleFile(Object, collectObjectSectionSizes, OutputFile.os());
+  } else {
+    for (auto Object : Objects)
+      Success &= handleFile(Object, dumpObjectFile, OutputFile.os());
+  }
 
-  return EXIT_SUCCESS;
+  return Success ? EXIT_SUCCESS : EXIT_FAILURE;
 }

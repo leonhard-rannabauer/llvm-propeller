@@ -1,7 +1,8 @@
 add_llvm_component_library(LLVMTransformUtils
+  AddDiscriminators.cpp
   AMDGPUEmitPrintf.cpp
   ASanStackFrameLayout.cpp
-  AddDiscriminators.cpp
+  AssumeBundleBuilder.cpp
   BasicBlockUtils.cpp
   BreakCriticalEdges.cpp
   BuildLibCalls.cpp
@@ -63,6 +64,7 @@ add_llvm_component_library(LLVMTransformUtils
   SymbolRewriter.cpp
   UnifyFunctionExitNodes.cpp
   UnifyLoopExits.cpp
+  UniqueInternalLinkageNames.cpp
   Utils.cpp
   ValueMapper.cpp
   VNCoercion.cpp

@@ -898,7 +898,7 @@ bool NewGVN::isBackedge(BasicBlock *From, BasicBlock *To) const {
 
 #ifndef NDEBUG
 static std::string getBlockName(const BasicBlock *B) {
-  return DOTGraphTraits<const Function *>::getSimpleNodeLabel(B, nullptr);
+  return DOTGraphTraits<DOTFuncInfo *>::getSimpleNodeLabel(B, nullptr);
 }
 #endif
 
@@ -1470,7 +1470,8 @@ NewGVN::performSymbolicLoadCoercion(Type *LoadType, Value *LoadPtr,
   // undef value.  This can happen when loading for a fresh allocation with no
   // intervening stores, for example.  Note that this is only true in the case
   // that the result of the allocation is pointer equal to the load ptr.
-  if (isa<AllocaInst>(DepInst) || isMallocLikeFn(DepInst, TLI)) {
+  if (isa<AllocaInst>(DepInst) || isMallocLikeFn(DepInst, TLI) ||
+      isAlignedAllocLikeFn(DepInst, TLI)) {
     return createConstantExpression(UndefValue::get(LoadType));
   }
   // If this load occurs either right after a lifetime begin,

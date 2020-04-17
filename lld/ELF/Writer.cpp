@@ -38,6 +38,8 @@
 
 #define DEBUG_TYPE "lld"
 
+#define DEBUG_TYPE "lld"
+
 using namespace llvm;
 using namespace llvm::ELF;
 using namespace llvm::object;
@@ -1700,7 +1702,8 @@ template <class ELFT> void Writer<ELFT>::finalizeAddressDependentContent() {
              Twine(os->alignment) + ")");
 }
 
-static void getNoneOptimizableSections(DenseSet<const InputSection*>& sectionSet) {
+static void
+getNoneOptimizableSections(DenseSet<const InputSection *> &sectionSet) {
   for (InputFile *File : objectFiles) {
     parallelForEach(File->getSymbols(), [&](Symbol *Sym) {
       auto *def = dyn_cast<Defined>(Sym);
@@ -1717,7 +1720,7 @@ static void getNoneOptimizableSections(DenseSet<const InputSection*>& sectionSet
       if (!inputSec)
         return;
       if (def->value + 6 == inputSec->data().size() ||
-          def->value + 5 == inputSec->data().size() )
+          def->value + 5 == inputSec->data().size())
         sectionSet.insert(inputSec);
     });
   }
@@ -1774,7 +1777,7 @@ template <class ELFT> void Writer<ELFT>::optimizeBasicBlockJumps() {
   assert(config->optimizeBBJumps);
 
   script->assignAddresses();
-  DenseSet<const InputSection*> noneOptimizableSections;
+  DenseSet<const InputSection *> noneOptimizableSections;
   getNoneOptimizableSections(noneOptimizableSections);
   // For every output section that has executable input sections, this
   // does the following:
@@ -1793,8 +1796,7 @@ template <class ELFT> void Writer<ELFT>::optimizeBasicBlockJumps() {
     // consecutive jump instructions can be flipped so that a fall
     // through jmp instruction can be deleted.
     parallelForEachN(0, sections.size(), [&](size_t i) {
-      InputSection *next =
-          (i + 1) < sections.size() ? sections[i + 1] : nullptr;
+      InputSection *next = i + 1 < sections.size() ? sections[i + 1] : nullptr;
       InputSection &is = *sections[i];
       if (!noneOptimizableSections.count(&is))
         result[i] =
@@ -2200,7 +2202,8 @@ template <class ELFT> void Writer<ELFT>::finalizeSections() {
   finalizeSynthetic(in.ppc64LongBranchTarget);
 
   // Relaxation to delete inter-basic block jumps created by basic block
-  // sections. Run after in.symTab is finalized.
+  // sections. Run after in.symTab is finalized as optimizeBasicBlockJumps
+  // can relax jump instructions based on symbol offset.
   if (config->optimizeBBJumps)
     optimizeBasicBlockJumps();
 

@@ -192,7 +192,8 @@ bool Propfile::processSymbolLine(
   char optionalSuffix = bbParts.second.back();
   SymbolEntry::BBTagTypeEnum bbTagType;
   StringRef ephemeralBBIndex;
-  if (optionalSuffix == 'r' || optionalSuffix == 'l' || optionalSuffix == 'L') {
+  if (optionalSuffix == 'f' || optionalSuffix == 'r' || optionalSuffix == 'l' ||
+      optionalSuffix == 'L') {
     bbTagType = SymbolEntry::toBBTagType(optionalSuffix);
     ephemeralBBIndex = bbParts.second.drop_back();
   } else {
@@ -331,6 +332,8 @@ static bool parseBranchOrFallthroughLine(StringRef lineRef,
     *type = '\0';
   return true;
 }
+
+bool Propfile::processProfile2() { return true; }
 
 // Read propeller profile. Refer header file for detail about propeller profile.
 bool Propfile::processProfile() {

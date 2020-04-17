@@ -132,6 +132,11 @@ public:
   /// default, this is equal to CurrentFnSym.
   MCSymbol *CurrentFnSymForSize = nullptr;
 
+  struct MBBSectionRange {
+    MCSymbol *BeginLabel, *EndLabel;
+  };
+  SmallVector<MBBSectionRange, 4> MBBSectionRanges;
+
   /// Map global GOT equivalent MCSymbols to GlobalVariables and keep track of
   /// its number of uses by other globals.
   using GOTEquivUsePair = std::pair<const GlobalVariable *, unsigned>;
@@ -141,6 +146,10 @@ private:
   MCSymbol *CurrentFnEnd = nullptr;
   MCSymbol *CurExceptionSym = nullptr;
   DenseMap<const MachineBasicBlock *, MCSymbol *> ExceptionSymbols;
+
+  // The symbol used to represent the start of the current BB section of the
+  // function. This is used to calculate the size of the BB section.
+  MCSymbol *CurrentSectionBeginSym = nullptr;
 
   // The garbage collection metadata printer table.
   void *GCMetadataPrinters = nullptr; // Really a DenseMap.

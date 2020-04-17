@@ -10,7 +10,6 @@
 #include "AffineMapDetail.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/StandardTypes.h"
-#include "mlir/Support/Functional.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Support/MathExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -323,6 +322,15 @@ AffineMap mlir::simplifyAffineMap(AffineMap map) {
         simplifyAffineExpr(e, map.getNumDims(), map.getNumSymbols()));
   }
   return AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs);
+}
+
+AffineMap mlir::removeDuplicateExprs(AffineMap map) {
+  auto results = map.getResults();
+  SmallVector<AffineExpr, 4> uniqueExprs(results.begin(), results.end());
+  uniqueExprs.erase(std::unique(uniqueExprs.begin(), uniqueExprs.end()),
+                    uniqueExprs.end());
+  return AffineMap::get(map.getNumDims(), map.getNumSymbols(), uniqueExprs,
+                        map.getContext());
 }
 
 AffineMap mlir::inversePermutation(AffineMap map) {

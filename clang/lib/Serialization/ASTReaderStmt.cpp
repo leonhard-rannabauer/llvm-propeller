@@ -927,6 +927,33 @@ void ASTStmtReader::VisitOMPArrayShapingExpr(OMPArrayShapingExpr *E) {
   E->setRParenLoc(readSourceLocation());
 }
 
+void ASTStmtReader::VisitOMPIteratorExpr(OMPIteratorExpr *E) {
+  VisitExpr(E);
+  unsigned NumIters = Record.readInt();
+  E->setIteratorKwLoc(readSourceLocation());
+  E->setLParenLoc(readSourceLocation());
+  E->setRParenLoc(readSourceLocation());
+  for (unsigned I = 0; I < NumIters; ++I) {
+    E->setIteratorDeclaration(I, Record.readDeclRef());
+    E->setAssignmentLoc(I, readSourceLocation());
+    Expr *Begin = Record.readSubExpr();
+    Expr *End = Record.readSubExpr();
+    Expr *Step = Record.readSubExpr();
+    SourceLocation ColonLoc = readSourceLocation();
+    SourceLocation SecColonLoc;
+    if (Step)
+      SecColonLoc = readSourceLocation();
+    E->setIteratorRange(I, Begin, ColonLoc, End, SecColonLoc, Step);
+    // Deserialize helpers
+    OMPIteratorHelperData HD;
+    HD.CounterVD = cast_or_null<VarDecl>(Record.readDeclRef());
+    HD.Upper = Record.readSubExpr();
+    HD.Update = Record.readSubExpr();
+    HD.CounterUpdate = Record.readSubExpr();
+    E->setHelper(I, HD);
+  }
+}
+
 void ASTStmtReader::VisitCallExpr(CallExpr *E) {
   VisitExpr(E);
   unsigned NumArgs = Record.readInt();
@@ -2885,6 +2912,11 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
     case EXPR_OMP_ARRAY_SHAPING:
       S = OMPArrayShapingExpr::CreateEmpty(
           Context, Record[ASTStmtReader::NumExprFields]);
+      break;
+
+    case EXPR_OMP_ITERATOR:
+      S = OMPIteratorExpr::CreateEmpty(Context,
+                                       Record[ASTStmtReader::NumExprFields]);
       break;
 
     case EXPR_CALL:

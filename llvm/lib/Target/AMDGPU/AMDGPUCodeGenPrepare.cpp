@@ -15,6 +15,7 @@
 #include "AMDGPU.h"
 #include "AMDGPUSubtarget.h"
 #include "AMDGPUTargetMachine.h"
+#include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/ConstantFolding.h"
@@ -56,7 +57,7 @@ static cl::opt<bool> WidenLoads(
   "amdgpu-codegenprepare-widen-constant-loads",
   cl::desc("Widen sub-dword constant address space loads in AMDGPUCodeGenPrepare"),
   cl::ReallyHidden,
-  cl::init(true));
+  cl::init(false));
 
 static cl::opt<bool> UseMul24Intrin(
   "amdgpu-codegenprepare-mul24",
@@ -647,7 +648,7 @@ bool AMDGPUCodeGenPrepare::foldBinOpIntoSelect(BinaryOperator &BO) const {
 //
 // a/b -> a*rcp(b) when inaccurate rcp is allowed with unsafe-fp-math or afn.
 static Value *optimizeWithRcp(Value *Num, Value *Den, bool AllowInaccurateRcp,
-                              bool RcpIsAccurate, IRBuilder<> Builder,
+                              bool RcpIsAccurate, IRBuilder<> &Builder,
                               Module *Mod) {
 
   if (!AllowInaccurateRcp && !RcpIsAccurate)
@@ -706,7 +707,7 @@ static Value *optimizeWithRcp(Value *Num, Value *Den, bool AllowInaccurateRcp,
 //
 // NOTE: optimizeWithRcp should be tried first because rcp is the preference.
 static Value *optimizeWithFDivFast(Value *Num, Value *Den, float ReqdAccuracy,
-                                   bool HasDenormals, IRBuilder<> Builder,
+                                   bool HasDenormals, IRBuilder<> &Builder,
                                    Module *Mod) {
   // fdiv.fast can achieve 2.5 ULP accuracy.
   if (ReqdAccuracy < 2.5f)
@@ -1387,7 +1388,9 @@ bool AMDGPUCodeGenPrepare::runOnFunction(Function &F) {
   DT = DTWP ? &DTWP->getDomTree() : nullptr;
 
   HasUnsafeFPMath = hasUnsafeFPMath(F);
-  HasFP32Denormals = ST->hasFP32Denormals(F);
+
+  AMDGPU::SIModeRegisterDefaults Mode(F);
+  HasFP32Denormals = Mode.allFP32Denormals();
 
   bool MadeChange = false;
 

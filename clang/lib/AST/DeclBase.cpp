@@ -378,6 +378,12 @@ ASTContext &Decl::getASTContext() const {
   return getTranslationUnitDecl()->getASTContext();
 }
 
+/// Helper to get the language options from the ASTContext.
+/// Defined out of line to avoid depending on ASTContext.h.
+const LangOptions &Decl::getLangOpts() const {
+  return getASTContext().getLangOpts();
+}
+
 ASTMutationListener *Decl::getASTMutationListener() const {
   return getASTContext().getASTMutationListener();
 }
@@ -454,7 +460,8 @@ ExternalSourceSymbolAttr *Decl::getExternalSourceSymbolAttr() const {
 }
 
 bool Decl::hasDefiningAttr() const {
-  return hasAttr<AliasAttr>() || hasAttr<IFuncAttr>();
+  return hasAttr<AliasAttr>() || hasAttr<IFuncAttr>() ||
+         hasAttr<LoaderUninitializedAttr>();
 }
 
 const Attr *Decl::getDefiningAttr() const {
@@ -462,6 +469,8 @@ const Attr *Decl::getDefiningAttr() const {
     return AA;
   if (auto *IFA = getAttr<IFuncAttr>())
     return IFA;
+  if (auto *NZA = getAttr<LoaderUninitializedAttr>())
+    return NZA;
   return nullptr;
 }
 

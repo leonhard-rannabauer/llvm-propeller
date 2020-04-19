@@ -37,6 +37,7 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Recycler.h"
+#include "llvm/Target/TargetOptions.h"
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -73,6 +74,7 @@ class TargetRegisterClass;
 class TargetSubtargetInfo;
 struct WasmEHFuncInfo;
 struct WinEHFuncInfo;
+class GISelChangeObserver;
 
 template <> struct ilist_alloc_traits<MachineBasicBlock> {
   void deleteNode(MachineBasicBlock *MBB);
@@ -222,7 +224,7 @@ struct LandingPadInfo {
 };
 
 class MachineFunction {
-  const Function &F;
+  Function &F;
   const LLVMTargetMachine &Target;
   const TargetSubtargetInfo *STI;
   MCContext &Ctx;
@@ -264,7 +266,7 @@ class MachineFunction {
   // Basic block number 'i' gets a prefix of length 'i'.  The ith character also
   // denotes the type of basic block number 'i'.  Return blocks are marked with
   // 'r', landing pads with 'l' and regular blocks with 'a'.
-  std::vector<char> MBBSymbolPrefix;
+  std::vector<char> BBSectionsSymbolPrefix;
 
   // Pool-allocate MachineFunction-lifetime and IR objects.
   BumpPtrAllocator Allocator;
@@ -341,12 +343,8 @@ class MachineFunction {
   bool HasEHScopes = false;
   bool HasEHFunclets = false;
 
-  // True if basic block sections that are generated have been sorted.
-  bool BBSectionsSorted = false;
-  // True if sections must be generated for all basic blocks.
-  bool BBSections = false;
-  // True if labels must be generated for all basic blocks.
-  bool BasicBlockLabels = false;
+  /// Section Type for basic blocks, only relevant with basic block sections.
+  BasicBlockSection BBSectionsType = BasicBlockSection::None;
 
   /// List of C++ TypeInfo used.
   std::vector<const GlobalValue *> TypeInfos;
@@ -413,6 +411,7 @@ public:
 
 private:
   Delegate *TheDelegate = nullptr;
+  GISelChangeObserver *Observer = nullptr;
 
   using CallSiteInfoMap = DenseMap<const MachineInstr *, CallSiteInfo>;
   /// Map a call instruction to call site arguments forwarding info.
@@ -431,7 +430,7 @@ public:
   using VariableDbgInfoMapTy = SmallVector<VariableDbgInfo, 4>;
   VariableDbgInfoMapTy VariableDbgInfos;
 
-  MachineFunction(const Function &F, const LLVMTargetMachine &Target,
+  MachineFunction(Function &F, const LLVMTargetMachine &Target,
                   const TargetSubtargetInfo &STI, unsigned FunctionNum,
                   MachineModuleInfo &MMI);
   MachineFunction(const MachineFunction &) = delete;
@@ -461,6 +460,10 @@ public:
     TheDelegate = delegate;
   }
 
+  void setObserver(GISelChangeObserver *O) { Observer = O; }
+
+  GISelChangeObserver *getObserver() const { return Observer; }
+
   MachineModuleInfo &getMMI() const { return MMI; }
   MCContext &getContext() const { return Ctx; }
 
@@ -476,6 +479,9 @@ public:
   const DataLayout &getDataLayout() const;
 
   /// Return the LLVM function that this machine code represents
+  Function &getFunction() { return F; }
+
+  /// Return the LLVM function that this machine code represents
   const Function &getFunction() const { return F; }
 
   /// getName - Return the name of the corresponding LLVM function.
@@ -485,16 +491,24 @@ public:
   unsigned getFunctionNumber() const { return FunctionNumber; }
 
   /// Returns true if this function has basic block sections enabled.
-  bool getBBSections() const { return BBSections; }
-
-  /// Sort the basic blocks according to the sections they belong to.
-  bool sortBBSections();
-
-  /// Indicates that basic block Labels are to be generated for this function.
-  void setBasicBlockLabels();
+  bool hasBBSections() const {
+    return (BBSectionsType == BasicBlockSection::All ||
+            BBSectionsType == BasicBlockSection::List);
+  }
 
   /// Returns true if basic block labels are to be generated for this function.
-  bool getBasicBlockLabels() const { return BasicBlockLabels; }
+  bool hasBBLabels() const {
+    return BBSectionsType == BasicBlockSection::Labels;
+  }
+
+  void setBBSectionsType(BasicBlockSection V) { BBSectionsType = V; }
+
+  /// Creates basic block Labels for this function.
+  void createBBLabels();
+
+  /// Assign IsBeginSection IsEndSection fields for basic blocks in this
+  /// function.
+  void assignBeginEndSections();
 
   /// getTarget - Return the target machine this machine code is compiled with
   const LLVMTargetMachine &getTarget() const { return Target; }
@@ -788,9 +802,8 @@ public:
   /// explicitly deallocated.
   MachineMemOperand *getMachineMemOperand(
       MachinePointerInfo PtrInfo, MachineMemOperand::Flags f, uint64_t s,
-      unsigned base_alignment, const AAMDNodes &AAInfo = AAMDNodes(),
-      const MDNode *Ranges = nullptr,
-      SyncScope::ID SSID = SyncScope::System,
+      Align base_alignment, const AAMDNodes &AAInfo = AAMDNodes(),
+      const MDNode *Ranges = nullptr, SyncScope::ID SSID = SyncScope::System,
       AtomicOrdering Ordering = AtomicOrdering::NotAtomic,
       AtomicOrdering FailureOrdering = AtomicOrdering::NotAtomic);
 
@@ -1035,25 +1048,24 @@ public:
   /// Following functions update call site info. They should be called before
   /// removing, replacing or copying call instruction.
 
-  /// Move the call site info from \p Old to \New call site info. This function
-  /// is used when we are replacing one call instruction with another one to
-  /// the same callee.
-  void moveCallSiteInfo(const MachineInstr *Old,
-                        const MachineInstr *New);
-
   /// Erase the call site info for \p MI. It is used to remove a call
   /// instruction from the instruction stream.
   void eraseCallSiteInfo(const MachineInstr *MI);
-
   /// Copy the call site info from \p Old to \ New. Its usage is when we are
   /// making a copy of the instruction that will be inserted at different point
   /// of the instruction stream.
   void copyCallSiteInfo(const MachineInstr *Old,
                         const MachineInstr *New);
 
-  const std::vector<char> &getMBBSymbolPrefix() const {
-    return MBBSymbolPrefix;
+  const std::vector<char> &getBBSectionsSymbolPrefix() const {
+    return BBSectionsSymbolPrefix;
   }
+
+  /// Move the call site info from \p Old to \New call site info. This function
+  /// is used when we are replacing one call instruction with another one to
+  /// the same callee.
+  void moveCallSiteInfo(const MachineInstr *Old,
+                        const MachineInstr *New);
 };
 
 //===--------------------------------------------------------------------===//

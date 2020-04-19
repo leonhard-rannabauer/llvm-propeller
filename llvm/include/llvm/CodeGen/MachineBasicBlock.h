@@ -46,6 +46,47 @@ class raw_ostream;
 class TargetRegisterClass;
 class TargetRegisterInfo;
 
+// This structure uniquely identifies a basic block section.
+// Possible values are
+//  {Type: Default, Number: (unsigned)} (These are regular section IDs)
+//  {Type: Exception, Number: 0}  (ExceptionSectionID)
+//  {Type: Cold, Number: 0}  (ColdSectionID)
+struct MBBSectionID {
+  enum SectionType {
+    Default = 0, // Regular section (these sections are distinguished by the
+                 // Number field).
+    Exception,   // Special section type for exception handling blocks
+    Cold,        // Special section type for cold blocks
+  } Type;
+  unsigned Number;
+
+  MBBSectionID(unsigned N) : Type(Default), Number(N) {}
+
+  // Special unique sections for cold and exception blocks.
+  const static MBBSectionID ColdSectionID;
+  const static MBBSectionID ExceptionSectionID;
+
+  bool operator==(const MBBSectionID &Other) const {
+    return Type == Other.Type && Number == Other.Number;
+  }
+
+  bool operator!=(const MBBSectionID &Other) const { return !(*this == Other); }
+
+  // This returns a unique index for the section in the range [0, max(Number)+2]
+  struct ToIndexFunctor {
+    using argument_type = MBBSectionID;
+    unsigned operator()(MBBSectionID SectionID) const {
+      return ((unsigned)MBBSectionID::SectionType::Cold) -
+             ((unsigned)SectionID.Type) + SectionID.Number;
+    }
+    static unsigned indexSize(unsigned NumBlockIDs) { return NumBlockIDs + 2; }
+  };
+
+private:
+  // This is only used to construct the special cold and exception sections.
+  MBBSectionID(SectionType T) : Type(T), Number(0) {}
+};
+
 template <> struct ilist_traits<MachineInstr> {
 private:
   friend class MachineBasicBlock; // Set by the owning MachineBasicBlock.
@@ -130,17 +171,20 @@ private:
   /// Indicate that this basic block is the entry block of a cleanup funclet.
   bool IsCleanupFuncletEntry = false;
 
-  /// Indicate that this basic block begins a new section.
+  /// With basic block sections, this stores the Section ID of the basic block.
+  MBBSectionID SectionID{0};
+
+  // Indicate that this basic block begins a section.
   bool IsBeginSection = false;
 
-  /// Indicate that this basic block ends the current section.
+  // Indicate that this basic block ends a section.
   bool IsEndSection = false;
 
-  /// Indicate that this basic block belongs to the cold section.
-  bool IsColdSection = false;
+  /// Default target of the callbr of a basic block.
+  bool InlineAsmBrDefaultTarget = false;
 
-  /// Indicate that this basic block belong to the exception section.
-  bool IsExceptionSection = false;
+  /// List of indirect targets of the callbr of a basic block.
+  SmallPtrSet<const MachineBasicBlock*, 4> InlineAsmBrIndirectTargets;
 
   /// since getSymbol is a relatively heavy-weight operation, the symbol
   /// is only computed once and is cached.
@@ -347,7 +391,7 @@ public:
   /// Add PhysReg as live in to this block, and ensure that there is a copy of
   /// PhysReg to a virtual register of class RC. Return the virtual register
   /// that is a copy of the live in PhysReg.
-  unsigned addLiveIn(MCRegister PhysReg, const TargetRegisterClass *RC);
+  Register addLiveIn(MCRegister PhysReg, const TargetRegisterClass *RC);
 
   /// Remove the specified register from the live in set.
   void removeLiveIn(MCPhysReg Reg,
@@ -424,29 +468,48 @@ public:
   /// Indicates if this is the entry block of a cleanup funclet.
   void setIsCleanupFuncletEntry(bool V = true) { IsCleanupFuncletEntry = V; }
 
-  /// Returns true if this block begins a section.
+  /// Returns true if this block begins any section.
   bool isBeginSection() const { return IsBeginSection; }
 
-  /// Indicate that this basic block begins a new section.
-  void setBeginSection(bool V = true) { IsBeginSection = V; }
-
-  /// Returns true if this block ends a section.
+  /// Returns true if this block ends any section.
   bool isEndSection() const { return IsEndSection; }
 
-  /// Indicate that this basic block ends a section.
-  void setEndSection(bool V = true) { IsEndSection = V; }
+  void setIsBeginSection(bool V = true) { IsBeginSection = V; }
 
-  /// Returns true if this basic block belongs to the cold section.
-  bool isColdSection() const { return IsColdSection; }
+  void setIsEndSection(bool V = true) { IsEndSection = V; }
 
-  /// Indicate that this basic block belongs to the cold section.
-  void setColdSection(bool V = true) { IsColdSection = V; }
+  /// Returns the section ID of this basic block.
+  MBBSectionID getSectionID() const { return SectionID; }
 
-  /// Returns true if this basic block belongs to the exception section.
-  bool isExceptionSection() const { return IsExceptionSection; }
+  /// Sets the section ID for this basic block.
+  void setSectionID(MBBSectionID V) { SectionID = V; }
 
-  /// Indicate that this basic block belongs to the exception section.
-  void setExceptionSection(bool V = true) { IsExceptionSection = V; }
+  /// Returns true if this is the indirect dest of an INLINEASM_BR.
+  bool isInlineAsmBrIndirectTarget(const MachineBasicBlock *Tgt) const {
+    return InlineAsmBrIndirectTargets.count(Tgt);
+  }
+
+  /// Indicates if this is the indirect dest of an INLINEASM_BR.
+  void addInlineAsmBrIndirectTarget(const MachineBasicBlock *Tgt) {
+    InlineAsmBrIndirectTargets.insert(Tgt);
+  }
+
+  /// Transfers indirect targets to INLINEASM_BR's copy block.
+  void transferInlineAsmBrIndirectTargets(MachineBasicBlock *CopyBB) {
+    for (auto *Target : InlineAsmBrIndirectTargets)
+      CopyBB->addInlineAsmBrIndirectTarget(Target);
+    return InlineAsmBrIndirectTargets.clear();
+  }
+
+  /// Returns true if this is the default dest of an INLINEASM_BR.
+  bool isInlineAsmBrDefaultTarget() const {
+    return InlineAsmBrDefaultTarget;
+  }
+
+  /// Indicates if this is the default deft of an INLINEASM_BR.
+  void setInlineAsmBrDefaultTarget() {
+    InlineAsmBrDefaultTarget = true;
+  }
 
   /// Returns true if it is legal to hoist instructions into this block.
   bool isLegalToHoistInto() const;
@@ -459,14 +522,10 @@ public:
   void moveBefore(MachineBasicBlock *NewAfter);
   void moveAfter(MachineBasicBlock *NewBefore);
 
-  /// Insert an unconditional jump to a fallthrough block if any.
-  void insertUnconditionalFallthroughBranch();
-
   /// Returns true if this and MBB belong to the same section.
-  bool sameSection(const MachineBasicBlock *MBB) const;
-
-  /// Returns the basic block that ends the section which contains this one.
-  const MachineBasicBlock *getSectionEndMBB() const;
+  bool sameSection(const MachineBasicBlock *MBB) const {
+    return getSectionID() == MBB->getSectionID();
+  }
 
   /// Update the terminator instructions in block to account for changes to the
   /// layout. If the block previously used a fallthrough, it may now need a
@@ -832,7 +891,7 @@ public:
   ///
   /// \p Reg must be a physical register.
   LivenessQueryResult computeRegisterLiveness(const TargetRegisterInfo *TRI,
-                                              unsigned Reg,
+                                              MCRegister Reg,
                                               const_iterator Before,
                                               unsigned Neighborhood = 10) const;
 
@@ -853,12 +912,6 @@ public:
 
   /// Return the MCSymbol for this basic block.
   MCSymbol *getSymbol() const;
-
-  /// Sets the MCSymbol corresponding to the end of this basic block.
-  void setEndMCSymbol(MCSymbol *Sym) { EndMCSymbol = Sym; }
-
-  /// Returns the MCSymbol corresponding to the end of this basic block.
-  MCSymbol *getEndMCSymbol() const { return EndMCSymbol; }
 
   Optional<uint64_t> getIrrLoopHeaderWeight() const {
     return IrrLoopHeaderWeight;

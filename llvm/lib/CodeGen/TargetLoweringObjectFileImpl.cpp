@@ -86,6 +86,15 @@ static void GetObjCImageInfo(Module &M, unsigned &Version, unsigned &Flags,
     } else if (Key == "Objective-C Image Info Section") {
       Section = cast<MDString>(MFE.Val)->getString();
     }
+    // Backend generates L_OBJC_IMAGE_INFO from Swift ABI version + major + minor +
+    // "Objective-C Garbage Collection".
+    else if (Key == "Swift ABI Version") {
+      Flags |= (mdconst::extract<ConstantInt>(MFE.Val)->getZExtValue()) << 8;
+    } else if (Key == "Swift Major Version") {
+      Flags |= (mdconst::extract<ConstantInt>(MFE.Val)->getZExtValue()) << 24;
+    } else if (Key == "Swift Minor Version") {
+      Flags |= (mdconst::extract<ConstantInt>(MFE.Val)->getZExtValue()) << 16;
+    }
   }
 }
 
@@ -99,6 +108,7 @@ void TargetLoweringObjectFileELF::Initialize(MCContext &Ctx,
   TM = &TgtM;
 
   CodeModel::Model CM = TgtM.getCodeModel();
+  InitializeELF(TgtM.Options.UseInitArray);
 
   switch (TgtM.getTargetTriple().getArch()) {
   case Triple::arm:
@@ -280,7 +290,7 @@ void TargetLoweringObjectFileELF::emitModuleMetadata(MCStreamer &Streamer,
         report_fatal_error("invalid llvm.linker.options");
       for (const auto &Option : cast<MDNode>(Operand)->operands()) {
         Streamer.emitBytes(cast<MDString>(Option)->getString());
-        Streamer.emitIntValue(0, 1);
+        Streamer.emitInt8(0);
       }
     }
   }
@@ -294,7 +304,7 @@ void TargetLoweringObjectFileELF::emitModuleMetadata(MCStreamer &Streamer,
     for (const auto *Operand : DependentLibraries->operands()) {
       Streamer.emitBytes(
           cast<MDString>(cast<MDNode>(Operand)->getOperand(0))->getString());
-      Streamer.emitIntValue(0, 1);
+      Streamer.emitInt8(0);
     }
   }
 
@@ -307,8 +317,8 @@ void TargetLoweringObjectFileELF::emitModuleMetadata(MCStreamer &Streamer,
     auto *S = C.getELFSection(Section, ELF::SHT_PROGBITS, ELF::SHF_ALLOC);
     Streamer.SwitchSection(S);
     Streamer.emitLabel(C.getOrCreateSymbol(StringRef("OBJC_IMAGE_INFO")));
-    Streamer.emitIntValue(Version, 4);
-    Streamer.emitIntValue(Flags, 4);
+    Streamer.emitInt32(Version);
+    Streamer.emitInt32(Flags);
     Streamer.AddBlankLine();
   }
 
@@ -422,6 +432,8 @@ static SectionKind getELFKindForNamedSection(StringRef Name, SectionKind K) {
   //   .section   .eh_frame,"a",@progbits
 
   if (Name == getInstrProfSectionName(IPSK_covmap, Triple::ELF,
+                                      /*AddSegmentInfo=*/false) ||
+      Name == getInstrProfSectionName(IPSK_covfun, Triple::ELF,
                                       /*AddSegmentInfo=*/false))
     return SectionKind::getMetadata();
 
@@ -757,14 +769,31 @@ MCSection *TargetLoweringObjectFileELF::getSectionForConstant(
 MCSection *TargetLoweringObjectFileELF::getSectionForMachineBasicBlock(
     const Function &F, const MachineBasicBlock &MBB,
     const TargetMachine &TM) const {
+  assert(MBB.isBeginSection() && "Basic block does not start a section!");
   SmallString<128> Name;
   Name = (static_cast<MCSectionELF *>(MBB.getParent()->getSection()))
              ->getSectionName();
-  if (TM.getUniqueBBSectionNames()) {
-    Name += ".";
-    Name += MBB.getSymbol()->getName();
+  unsigned UniqueID = MCContext::GenericSectionID;
+
+  switch (MBB.getSectionID().Type) {
+    // Append suffixes to represent special cold and exception sections.
+  case MBBSectionID::SectionType::Exception:
+    Name += ".eh";
+    break;
+  case MBBSectionID::SectionType::Cold:
+    Name += ".unlikely";
+    break;
+  // For regular sections, either use a unique name, or a unique ID for the
+  // section.
+  default:
+    if (TM.getUniqueBBSectionNames()) {
+      Name += ".";
+      Name += MBB.getSymbol()->getName();
+    } else
+      UniqueID = NextUniqueID++;
+    break;
   }
-  unsigned UniqueID = NextUniqueID++;
+
   unsigned Flags = ELF::SHF_ALLOC | ELF::SHF_EXECINSTR;
   std::string GroupName = "";
   if (F.hasComdat()) {
@@ -774,33 +803,6 @@ MCSection *TargetLoweringObjectFileELF::getSectionForMachineBasicBlock(
   return getContext().getELFSection(Name, ELF::SHT_PROGBITS, Flags,
                                     0 /* Entry Size */, GroupName, UniqueID,
                                     nullptr);
-}
-
-MCSection *TargetLoweringObjectFileELF::getNamedSectionForMachineBasicBlock(
-    const Function &F, const MachineBasicBlock &MBB, const TargetMachine &TM,
-    const char *Suffix) const {
-  SmallString<128> Name;
-  Name = (static_cast<MCSectionELF *>(MBB.getParent()->getSection()))
-             ->getSectionName();
-
-  // If unique section names is off, explicity add the function name to the
-  // section name to make sure named sections for functions are unique
-  // across the module.
-  if (!TM.getUniqueSectionNames()) {
-    Name += ".";
-    Name += MBB.getParent()->getName();
-  }
-
-  Name += Suffix;
-
-  unsigned Flags = ELF::SHF_ALLOC | ELF::SHF_EXECINSTR;
-  std::string GroupName = "";
-  if (F.hasComdat()) {
-    Flags |= ELF::SHF_GROUP;
-    GroupName = F.getComdat()->getName().str();
-  }
-  return getContext().getELFSection(Name, ELF::SHT_PROGBITS, Flags,
-                                    0 /* Entry Size */, GroupName);
 }
 
 static MCSectionELF *getStaticStructorSection(MCContext &Ctx, bool UseInitArray,
@@ -972,8 +974,8 @@ void TargetLoweringObjectFileMachO::emitModuleMetadata(MCStreamer &Streamer,
   Streamer.SwitchSection(S);
   Streamer.emitLabel(getContext().
                      getOrCreateSymbol(StringRef("L_OBJC_IMAGE_INFO")));
-  Streamer.emitIntValue(VersionVal, 4);
-  Streamer.emitIntValue(ImageInfoFlags, 4);
+  Streamer.emitInt32(VersionVal);
+  Streamer.emitInt32(ImageInfoFlags);
   Streamer.AddBlankLine();
 }
 
@@ -1525,8 +1527,8 @@ void TargetLoweringObjectFileCOFF::emitModuleMetadata(MCStreamer &Streamer,
       SectionKind::getReadOnly());
   Streamer.SwitchSection(S);
   Streamer.emitLabel(C.getOrCreateSymbol(StringRef("OBJC_IMAGE_INFO")));
-  Streamer.emitIntValue(Version, 4);
-  Streamer.emitIntValue(Flags, 4);
+  Streamer.emitInt32(Version);
+  Streamer.emitInt32(Flags);
   Streamer.AddBlankLine();
 }
 
@@ -1669,8 +1671,8 @@ static std::string scalarConstantToHexString(const Constant *C) {
     return APIntToHexString(CI->getValue());
   } else {
     unsigned NumElements;
-    if (isa<VectorType>(Ty))
-      NumElements = Ty->getVectorNumElements();
+    if (auto *VTy = dyn_cast<VectorType>(Ty))
+      NumElements = VTy->getNumElements();
     else
       NumElements = Ty->getArrayNumElements();
     std::string HexString;
@@ -1743,16 +1745,6 @@ static const Comdat *getWasmComdat(const GlobalValue *GV) {
   return C;
 }
 
-static SectionKind getWasmKindForNamedSection(StringRef Name, SectionKind K) {
-  // If we're told we have function data, then use that.
-  if (K.isText())
-    return SectionKind::getText();
-
-  // Otherwise, ignore whatever section type the generic impl detected and use
-  // a plain data section.
-  return SectionKind::getData();
-}
-
 MCSection *TargetLoweringObjectFileWasm::getExplicitSectionGlobal(
     const GlobalObject *GO, SectionKind Kind, const TargetMachine &TM) const {
   // We don't support explict section names for functions in the wasm object
@@ -1762,8 +1754,6 @@ MCSection *TargetLoweringObjectFileWasm::getExplicitSectionGlobal(
   }
 
   StringRef Name = GO->getSection();
-
-  Kind = getWasmKindForNamedSection(Name, Kind);
 
   StringRef Group = "";
   if (const Comdat *C = getWasmComdat(GO)) {
@@ -2010,7 +2000,11 @@ XCOFF::StorageClass TargetLoweringObjectFileXCOFF::getStorageClassForGlobal(
   case GlobalValue::CommonLinkage:
     return XCOFF::C_EXT;
   case GlobalValue::ExternalWeakLinkage:
+  case GlobalValue::LinkOnceODRLinkage:
     return XCOFF::C_WEAKEXT;
+  case GlobalValue::AppendingLinkage:
+    report_fatal_error(
+        "There is no mapping that implements AppendingLinkage for XCOFF.");
   default:
     report_fatal_error(
         "Unhandled linkage when mapping linkage to StorageClass.");
@@ -2018,9 +2012,11 @@ XCOFF::StorageClass TargetLoweringObjectFileXCOFF::getStorageClassForGlobal(
 }
 
 MCSection *TargetLoweringObjectFileXCOFF::getSectionForFunctionDescriptor(
-    const MCSymbol *FuncSym) const {
-  return getContext().getXCOFFSection(FuncSym->getName(), XCOFF::XMC_DS,
-                                      XCOFF::XTY_SD, XCOFF::C_HIDEXT,
+    const Function *F, const TargetMachine &TM) const {
+  SmallString<128> NameStr;
+  getNameWithPrefix(NameStr, F, TM);
+  return getContext().getXCOFFSection(NameStr, XCOFF::XMC_DS, XCOFF::XTY_SD,
+                                      getStorageClassForGlobal(F),
                                       SectionKind::getData());
 }
 

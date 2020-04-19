@@ -1,4 +1,4 @@
-# Introduction to MLIR Operation Traits
+# Operation Traits
 
 [TOC]
 
@@ -135,6 +135,17 @@ section goes as follows:
 *   `Header`
     -   (`C++ class` -- `ODS class`(if applicable))
 
+### AutomaticAllocationScope
+
+*   `OpTrait::AutomaticAllocationScope` -- `AutomaticAllocationScope`
+
+This trait is carried by region holding operations that define a new scope for
+automatic allocation. Such allocations are automatically freed when control is
+transferred back from the regions of such operations. As an example, allocations
+performed by [`std.alloca`](Dialects/Standard.md#stdalloca-allocaop) are
+automatically freed when control leaves the region of its closest surrounding op
+that has the trait AutomaticAllocationScope.
+
 ### Broadcastable
 
 *   `OpTrait::ResultsBroadcastableShape` -- `ResultsBroadcastableShape`
@@ -207,12 +218,6 @@ foo.region_op {
 
 This trait is an important structural property of the IR, and enables operations
 to have [passes](WritingAPass.md) scheduled under them.
-
-### NoSideEffect
-
-*   `OpTrait::HasNoSideEffect` -- `NoSideEffect`
-
-This trait signifies that the operation is pure and has no visible side effects.
 
 ### Single Block with Implicit Terminator
 

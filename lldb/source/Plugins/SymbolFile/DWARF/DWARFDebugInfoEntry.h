@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef SymbolFileDWARF_DWARFDebugInfoEntry_h_
-#define SymbolFileDWARF_DWARFDebugInfoEntry_h_
+#ifndef LLDB_SOURCE_PLUGINS_SYMBOLFILE_DWARF_DWARFDEBUGINFOENTRY_H
+#define LLDB_SOURCE_PLUGINS_SYMBOLFILE_DWARF_DWARFDEBUGINFOENTRY_H
 
 #include "SymbolFileDWARF.h"
 #include "llvm/ADT/SmallVector.h"
@@ -167,6 +167,8 @@ public:
   void SetSiblingIndex(uint32_t idx) { m_sibling_idx = idx; }
   void SetParentIndex(uint32_t idx) { m_parent_idx = idx; }
 
+  bool IsGlobalOrStaticVariable() const;
+
 protected:
   static DWARFDeclContext
   GetDWARFDeclContextStatic(const DWARFDebugInfoEntry *die, DWARFUnit *cu);
@@ -185,4 +187,4 @@ protected:
   dw_tag_t m_tag = llvm::dwarf::DW_TAG_null;
 };
 
-#endif // SymbolFileDWARF_DWARFDebugInfoEntry_h_
+#endif // LLDB_SOURCE_PLUGINS_SYMBOLFILE_DWARF_DWARFDEBUGINFOENTRY_H

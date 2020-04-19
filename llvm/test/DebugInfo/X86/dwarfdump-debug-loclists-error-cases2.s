@@ -1,5 +1,5 @@
 # RUN: llvm-mc -triple=x86_64-pc-linux -filetype=obj %s > %t
-# RUN: llvm-dwarfdump %t | FileCheck %s
+# RUN: not llvm-dwarfdump %t | FileCheck %s
 
 # CHECK:      DW_AT_name        ("x0")
 # CHECK-NEXT: DW_AT_location    (0x0000000c
@@ -8,11 +8,11 @@
 
 # CHECK:      DW_AT_name        ("x1")
 # CHECK-NEXT: DW_AT_location    (0xdeadbeef
-# CHECK-NEXT:    error: unexpected end of data)
+# CHECK-NEXT:    error: unexpected end of data at offset 0xdeadbeef)
 
 # CHECK:      DW_AT_name        ("x2")
 # CHECK-NEXT: DW_AT_location    (0x00000025
-# CHECK-NEXT:    error: unexpected end of data)
+# CHECK-NEXT:    error: unexpected end of data at offset 0x34)
 
 
         .type   f,@function

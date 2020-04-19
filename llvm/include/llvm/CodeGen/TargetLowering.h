@@ -278,7 +278,7 @@ public:
     bool IsSwiftSelf : 1;
     bool IsSwiftError : 1;
     bool IsCFGuardTarget : 1;
-    uint16_t Alignment = 0;
+    MaybeAlign Alignment = None;
     Type *ByValType = nullptr;
 
     ArgListEntry()
@@ -349,6 +349,12 @@ public:
   /// the alloca address space specified through the data layout.
   MVT getFrameIndexTy(const DataLayout &DL) const {
     return getPointerTy(DL, DL.getAllocaAddrSpace());
+  }
+
+  /// Return the type for code pointers, which is determined by the program
+  /// address space specified through the data layout.
+  MVT getProgramPointerTy(const DataLayout &DL) const {
+    return getPointerTy(DL, DL.getProgramAddressSpace());
   }
 
   /// Return the type for operands of fence.
@@ -1043,7 +1049,9 @@ public:
     case ISD::UMULFIX:
     case ISD::UMULFIXSAT:
     case ISD::SDIVFIX:
+    case ISD::SDIVFIXSAT:
     case ISD::UDIVFIX:
+    case ISD::UDIVFIXSAT:
       Supported = isSupportedFixedPointOperation(Op, VT, Scale);
       break;
     }
@@ -1657,18 +1665,16 @@ public:
 
   /// If a physical register, this returns the register that receives the
   /// exception address on entry to an EH pad.
-  virtual unsigned
+  virtual Register
   getExceptionPointerRegister(const Constant *PersonalityFn) const {
-    // 0 is guaranteed to be the NoRegister value on all targets
-    return 0;
+    return Register();
   }
 
   /// If a physical register, this returns the register that receives the
   /// exception typeid on entry to a landing pad.
-  virtual unsigned
+  virtual Register
   getExceptionSelectorRegister(const Constant *PersonalityFn) const {
-    // 0 is guaranteed to be the NoRegister value on all targets
-    return 0;
+    return Register();
   }
 
   virtual bool needsFixedCatchObjects() const {
@@ -1960,6 +1966,18 @@ public:
     return ISD::ZERO_EXTEND;
   }
 
+  /// Returns how the platform's atomic compare and swap expects its comparison
+  /// value to be extended (ZERO_EXTEND, SIGN_EXTEND, or ANY_EXTEND). This is
+  /// separate from getExtendForAtomicOps, which is concerned with the
+  /// sign-extension of the instruction's output, whereas here we are concerned
+  /// with the sign-extension of the input. For targets with compare-and-swap
+  /// instructions (or sub-word comparisons in their LL/SC loop expansions),
+  /// the input can be ANY_EXTEND, but the output will still have a specific
+  /// extension.
+  virtual ISD::NodeType getExtendForAtomicCmpSwapArg() const {
+    return ISD::ANY_EXTEND;
+  }
+
   /// @}
 
   /// Returns true if we should normalize
@@ -2048,7 +2066,7 @@ protected:
 
   /// If set to a physical register, this specifies the register that
   /// llvm.savestack/llvm.restorestack should save and restore.
-  void setStackPointerRegisterToSaveRestore(unsigned R) {
+  void setStackPointerRegisterToSaveRestore(Register R) {
     StackPointerRegisterToSaveRestore = R;
   }
 
@@ -2624,11 +2642,13 @@ public:
     return false;
   }
 
-  /// Returns true if the FADD or FSUB node passed could legally be combined with
-  /// an fmul to form an ISD::FMAD.
-  virtual bool isFMADLegalForFAddFSub(const SelectionDAG &DAG,
-                                      const SDNode *N) const {
-    assert(N->getOpcode() == ISD::FADD || N->getOpcode() == ISD::FSUB);
+  /// Returns true if be combined with to form an ISD::FMAD. \p N may be an
+  /// ISD::FADD, ISD::FSUB, or an ISD::FMUL which will be distributed into an
+  /// fadd/fsub.
+  virtual bool isFMADLegal(const SelectionDAG &DAG, const SDNode *N) const {
+    assert((N->getOpcode() == ISD::FADD || N->getOpcode() == ISD::FSUB ||
+            N->getOpcode() == ISD::FMUL) &&
+           "unexpected node in FMAD forming combine");
     return isOperationLegal(ISD::FMAD, N->getValueType(0));
   }
 
@@ -2676,17 +2696,21 @@ public:
   /// node operation. Targets may want to override this independently of whether
   /// the operation is legal/custom for the given type because it may obscure
   /// matching of other patterns.
-  virtual bool shouldFormOverflowOp(unsigned Opcode, EVT VT) const {
+  virtual bool shouldFormOverflowOp(unsigned Opcode, EVT VT,
+                                    bool MathUsed) const {
     // TODO: The default logic is inherited from code in CodeGenPrepare.
     // The opcode should not make a difference by default?
     if (Opcode != ISD::UADDO)
       return false;
 
     // Allow the transform as long as we have an integer type that is not
-    // obviously illegal and unsupported.
+    // obviously illegal and unsupported and if the math result is used
+    // besides the overflow check. On some targets (e.g. SPARC), it is
+    // not profitable to form on overflow op if the math result has no
+    // concrete users.
     if (VT.isVector())
       return false;
-    return VT.isSimple() || !isOperationExpand(Opcode, VT);
+    return MathUsed && (VT.isSimple() || !isOperationExpand(Opcode, VT));
   }
 
   // Return true if it is profitable to use a scalar input to a BUILD_VECTOR
@@ -2747,6 +2771,13 @@ public:
   /// the set of reserved registers.
   /// The default implementation just freezes the set of reserved registers.
   virtual void finalizeLowering(MachineFunction &MF) const;
+
+  //===----------------------------------------------------------------------===//
+  //  GlobalISel Hooks
+  //===----------------------------------------------------------------------===//
+  /// Check whether or not \p MI needs to be moved close to its uses.
+  virtual bool shouldLocalize(const MachineInstr &MI, const TargetTransformInfo *TTI) const;
+
 
 private:
   const TargetMachine &TM;
@@ -2818,7 +2849,7 @@ private:
 
   /// If set to a physical register, this specifies the register that
   /// llvm.savestack/llvm.restorestack should save and restore.
-  unsigned StackPointerRegisterToSaveRestore;
+  Register StackPointerRegisterToSaveRestore;
 
   /// This indicates the default register class to use for each ValueType the
   /// target supports natively.
@@ -3239,7 +3270,7 @@ public:
 
   /// Helper wrapper around SimplifyDemandedBits.
   /// Adds Op back to the worklist upon success.
-  bool SimplifyDemandedBits(SDValue Op, const APInt &DemandedMask,
+  bool SimplifyDemandedBits(SDValue Op, const APInt &DemandedBits,
                             DAGCombinerInfo &DCI) const;
 
   /// More limited version of SimplifyDemandedBits that can be used to "look
@@ -3249,6 +3280,12 @@ public:
                                           const APInt &DemandedElts,
                                           SelectionDAG &DAG,
                                           unsigned Depth) const;
+
+  /// Helper wrapper around SimplifyMultipleUseDemandedBits, demanding all
+  /// elements.
+  SDValue SimplifyMultipleUseDemandedBits(SDValue Op, const APInt &DemandedBits,
+                                          SelectionDAG &DAG,
+                                          unsigned Depth = 0) const;
 
   /// Look at Vector Op. At this point, we know that only the DemandedElts
   /// elements of the result of Op are ever used downstream.  If we can use
@@ -3284,6 +3321,7 @@ public:
                                              const APInt &DemandedElts,
                                              const SelectionDAG &DAG,
                                              unsigned Depth = 0) const;
+
   /// Determine which of the bits specified in Mask are known to be either zero
   /// or one and return them in the KnownZero/KnownOne bitsets. The DemandedElts
   /// argument allows us to only collect the known bits that are shared by the
@@ -3311,6 +3349,16 @@ public:
                                                    const APInt &DemandedElts,
                                                    const SelectionDAG &DAG,
                                                    unsigned Depth = 0) const;
+
+  /// This method can be implemented by targets that want to expose additional
+  /// information about sign bits to GlobalISel combiners. The DemandedElts
+  /// argument allows us to only collect the minimum sign bits that are shared
+  /// by the requested vector elements.
+  virtual unsigned computeNumSignBitsForTargetInstr(GISelKnownBits &Analysis,
+                                                    Register R,
+                                                    const APInt &DemandedElts,
+                                                    const MachineRegisterInfo &MRI,
+                                                    unsigned Depth = 0) const;
 
   /// Attempt to simplify any target nodes based on the demanded vector
   /// elements, returning true on success. Otherwise, analyze the expression and
@@ -3549,7 +3597,7 @@ public:
     ArgListTy Args;
     SelectionDAG &DAG;
     SDLoc DL;
-    ImmutableCallSite CS;
+    const CallBase *CB = nullptr;
     SmallVector<ISD::OutputArg, 32> Outs;
     SmallVector<SDValue, 32> OutVals;
     SmallVector<ISD::InputArg, 32> Ins;
@@ -3596,16 +3644,15 @@ public:
 
     CallLoweringInfo &setCallee(Type *ResultType, FunctionType *FTy,
                                 SDValue Target, ArgListTy &&ArgsList,
-                                ImmutableCallSite Call) {
+                                const CallBase &Call) {
       RetTy = ResultType;
 
       IsInReg = Call.hasRetAttr(Attribute::InReg);
       DoesNotReturn =
           Call.doesNotReturn() ||
-          (!Call.isInvoke() &&
-           isa<UnreachableInst>(Call.getInstruction()->getNextNode()));
+          (!isa<InvokeInst>(Call) && isa<UnreachableInst>(Call.getNextNode()));
       IsVarArg = FTy->isVarArg();
-      IsReturnValueUsed = !Call.getInstruction()->use_empty();
+      IsReturnValueUsed = !Call.use_empty();
       RetSExt = Call.hasRetAttr(Attribute::SExt);
       RetZExt = Call.hasRetAttr(Attribute::ZExt);
 
@@ -3615,7 +3662,7 @@ public:
       NumFixedArgs = FTy->getNumParams();
       Args = std::move(ArgsList);
 
-      CS = Call;
+      CB = &Call;
 
       return *this;
     }
@@ -3854,7 +3901,7 @@ public:
   /// Should SelectionDAG lower an atomic load of the given kind as a normal
   /// LoadSDNode (as opposed to an AtomicSDNode)?  NOTE: The intention is to
   /// eventually migrate all targets to the using LoadSDNodes, but porting is
-  /// being done target at a time.  
+  /// being done target at a time.
   virtual bool lowerAtomicLoadAsLoadSDNode(const LoadInst &LI) const {
     assert(LI.isAtomic() && "violated precondition");
     return false;
@@ -3990,7 +4037,7 @@ public:
   /// string itself isn't empty, there was an error parsing.
   virtual AsmOperandInfoVector ParseConstraints(const DataLayout &DL,
                                                 const TargetRegisterInfo *TRI,
-                                                ImmutableCallSite CS) const;
+                                                const CallBase &Call) const;
 
   /// Examine constraint type and operand type and determine a weight value.
   /// The operand object must already have been set up with the operand type.
@@ -4258,7 +4305,7 @@ public:
   /// method accepts integers as its arguments.
   SDValue expandFixedPointMul(SDNode *Node, SelectionDAG &DAG) const;
 
-  /// Method for building the DAG expansion of ISD::[US]DIVFIX. This
+  /// Method for building the DAG expansion of ISD::[US]DIVFIX[SAT]. This
   /// method accepts integers as its arguments.
   /// Note: This method may fail if the division could not be performed
   /// within the type. Clients must retry with a wider type if this happens.

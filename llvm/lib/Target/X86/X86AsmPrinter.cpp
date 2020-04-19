@@ -124,7 +124,7 @@ void X86AsmPrinter::PrintSymbolOperand(const MachineOperand &MO,
         MO.getTargetFlags() == X86II::MO_DARWIN_NONLAZY_PIC_BASE)
       GVSym = getSymbolWithGlobalValueBase(GV, "$non_lazy_ptr");
     else
-      GVSym = getSymbol(GV);
+      GVSym = getSymbolPreferLocal(*GV);
 
     // Handle dllimport linkage.
     if (MO.getTargetFlags() == X86II::MO_DLLIMPORT)
@@ -604,9 +604,9 @@ void X86AsmPrinter::emitStartOfAsmFile(Module &M) {
       OutStreamer->emitBytes(StringRef("GNU", 4)); // note name
 
       // Emitting an Elf_Prop for the CET properties.
-      OutStreamer->emitIntValue(ELF::GNU_PROPERTY_X86_FEATURE_1_AND, 4);
-      OutStreamer->emitIntValue(4, 4);               // data size
-      OutStreamer->emitIntValue(FeatureFlagsAnd, 4); // data
+      OutStreamer->emitInt32(ELF::GNU_PROPERTY_X86_FEATURE_1_AND);
+      OutStreamer->emitInt32(4);                          // data size
+      OutStreamer->emitInt32(FeatureFlagsAnd);            // data
       emitAlignment(WordSize == 4 ? Align(4) : Align(8)); // padding
 
       OutStreamer->endSection(Nt);
@@ -643,7 +643,7 @@ void X86AsmPrinter::emitStartOfAsmFile(Module &M) {
     OutStreamer->emitAssignment(
         S, MCConstantExpr::create(Feat00Flags, MMI->getContext()));
   }
-  OutStreamer->EmitSyntaxDirective();
+  OutStreamer->emitSyntaxDirective();
 
   // If this is not inline asm and we're in 16-bit
   // mode prefix assembly with .code16.

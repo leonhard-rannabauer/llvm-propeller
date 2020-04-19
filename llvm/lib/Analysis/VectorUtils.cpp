@@ -262,9 +262,12 @@ Value *llvm::getStrideFromPointer(Value *Ptr, ScalarEvolution *SE, Loop *Lp) {
 Value *llvm::findScalarElement(Value *V, unsigned EltNo) {
   assert(V->getType()->isVectorTy() && "Not looking at a vector?");
   VectorType *VTy = cast<VectorType>(V->getType());
-  unsigned Width = VTy->getNumElements();
-  if (EltNo >= Width)  // Out of range access.
-    return UndefValue::get(VTy->getElementType());
+  // For fixed-length vector, return undef for out of range access.
+  if (!VTy->isScalable()) {
+    unsigned Width = VTy->getNumElements();
+    if (EltNo >= Width)
+      return UndefValue::get(VTy->getElementType());
+  }
 
   if (Constant *C = dyn_cast<Constant>(V))
     return C->getAggregateElement(EltNo);
@@ -286,7 +289,8 @@ Value *llvm::findScalarElement(Value *V, unsigned EltNo) {
   }
 
   if (ShuffleVectorInst *SVI = dyn_cast<ShuffleVectorInst>(V)) {
-    unsigned LHSWidth = SVI->getOperand(0)->getType()->getVectorNumElements();
+    unsigned LHSWidth =
+        cast<VectorType>(SVI->getOperand(0)->getType())->getNumElements();
     int InEl = SVI->getMaskValue(EltNo);
     if (InEl < 0)
       return UndefValue::get(VTy->getElementType());
@@ -336,9 +340,9 @@ const llvm::Value *llvm::getSplatValue(const Value *V) {
 
   // shuf (inselt ?, Splat, 0), ?, <0, undef, 0, ...>
   Value *Splat;
-  if (match(V, m_ShuffleVector(m_InsertElement(m_Value(), m_Value(Splat),
-                                               m_ZeroInt()),
-                               m_Value(), m_ZeroInt())))
+  if (match(V, m_ShuffleVector(
+                   m_InsertElement(m_Value(), m_Value(Splat), m_ZeroInt()),
+                   m_Value(), m_ZeroMask())))
     return Splat;
 
   return nullptr;
@@ -363,7 +367,7 @@ bool llvm::isSplatValue(const Value *V, int Index, unsigned Depth) {
   if (auto *Shuf = dyn_cast<ShuffleVectorInst>(V)) {
     // FIXME: We can safely allow undefs here. If Index was specified, we will
     //        check that the mask elt is defined at the required index.
-    if (!Shuf->getMask()->getSplatValue())
+    if (!is_splat(Shuf->getShuffleMask()))
       return false;
 
     // Match any index.
@@ -392,6 +396,79 @@ bool llvm::isSplatValue(const Value *V, int Index, unsigned Depth) {
   // TODO: Add support for unary ops (fneg), casts, intrinsics (overflow ops).
 
   return false;
+}
+
+void llvm::narrowShuffleMaskElts(int Scale, ArrayRef<int> Mask,
+                                 SmallVectorImpl<int> &ScaledMask) {
+  assert(Scale > 0 && "Unexpected scaling factor");
+
+  // Fast-path: if no scaling, then it is just a copy.
+  if (Scale == 1) {
+    ScaledMask.assign(Mask.begin(), Mask.end());
+    return;
+  }
+
+  ScaledMask.clear();
+  for (int MaskElt : Mask) {
+    if (MaskElt >= 0) {
+      assert(((uint64_t)Scale * MaskElt + (Scale - 1)) <=
+                 std::numeric_limits<int32_t>::max() &&
+             "Overflowed 32-bits");
+    }
+    for (int SliceElt = 0; SliceElt != Scale; ++SliceElt)
+      ScaledMask.push_back(MaskElt < 0 ? MaskElt : Scale * MaskElt + SliceElt);
+  }
+}
+
+bool llvm::widenShuffleMaskElts(int Scale, ArrayRef<int> Mask,
+                                SmallVectorImpl<int> &ScaledMask) {
+  assert(Scale > 0 && "Unexpected scaling factor");
+
+  // Fast-path: if no scaling, then it is just a copy.
+  if (Scale == 1) {
+    ScaledMask.assign(Mask.begin(), Mask.end());
+    return true;
+  }
+
+  // We must map the original elements down evenly to a type with less elements.
+  int NumElts = Mask.size();
+  if (NumElts % Scale != 0)
+    return false;
+
+  ScaledMask.clear();
+  ScaledMask.reserve(NumElts / Scale);
+
+  // Step through the input mask by splitting into Scale-sized slices.
+  do {
+    ArrayRef<int> MaskSlice = Mask.take_front(Scale);
+    assert((int)MaskSlice.size() == Scale && "Expected Scale-sized slice.");
+
+    // The first element of the slice determines how we evaluate this slice.
+    int SliceFront = MaskSlice.front();
+    if (SliceFront < 0) {
+      // Negative values (undef or other "sentinel" values) must be equal across
+      // the entire slice.
+      if (!is_splat(MaskSlice))
+        return false;
+      ScaledMask.push_back(SliceFront);
+    } else {
+      // A positive mask element must be cleanly divisible.
+      if (SliceFront % Scale != 0)
+        return false;
+      // Elements of the slice must be consecutive.
+      for (int i = 1; i < Scale; ++i)
+        if (MaskSlice[i] != SliceFront + i)
+          return false;
+      ScaledMask.push_back(SliceFront / Scale);
+    }
+    Mask = Mask.drop_front(Scale);
+  } while (!Mask.empty());
+
+  assert((int)ScaledMask.size() * Scale == NumElts && "Unexpected scaled mask");
+
+  // All elements of the original mask can be scaled down to map to the elements
+  // of a mask with wider elements.
+  return true;
 }
 
 MapVector<Instruction *, uint64_t>
@@ -665,7 +742,7 @@ Instruction *llvm::propagateMetadata(Instruction *Inst, ArrayRef<Value *> VL) {
 }
 
 Constant *
-llvm::createBitMaskForGaps(IRBuilder<> &Builder, unsigned VF,
+llvm::createBitMaskForGaps(IRBuilderBase &Builder, unsigned VF,
                            const InterleaveGroup<Instruction> &Group) {
   // All 1's means mask is not needed.
   if (Group.getNumMembers() == Group.getFactor())
@@ -684,7 +761,7 @@ llvm::createBitMaskForGaps(IRBuilder<> &Builder, unsigned VF,
   return ConstantVector::get(Mask);
 }
 
-Constant *llvm::createReplicatedMask(IRBuilder<> &Builder, 
+Constant *llvm::createReplicatedMask(IRBuilderBase &Builder, 
                                      unsigned ReplicationFactor, unsigned VF) {
   SmallVector<Constant *, 16> MaskVec;
   for (unsigned i = 0; i < VF; i++)
@@ -694,7 +771,7 @@ Constant *llvm::createReplicatedMask(IRBuilder<> &Builder,
   return ConstantVector::get(MaskVec);
 }
 
-Constant *llvm::createInterleaveMask(IRBuilder<> &Builder, unsigned VF,
+Constant *llvm::createInterleaveMask(IRBuilderBase &Builder, unsigned VF,
                                      unsigned NumVecs) {
   SmallVector<Constant *, 16> Mask;
   for (unsigned i = 0; i < VF; i++)
@@ -704,7 +781,7 @@ Constant *llvm::createInterleaveMask(IRBuilder<> &Builder, unsigned VF,
   return ConstantVector::get(Mask);
 }
 
-Constant *llvm::createStrideMask(IRBuilder<> &Builder, unsigned Start,
+Constant *llvm::createStrideMask(IRBuilderBase &Builder, unsigned Start,
                                  unsigned Stride, unsigned VF) {
   SmallVector<Constant *, 16> Mask;
   for (unsigned i = 0; i < VF; i++)
@@ -713,7 +790,7 @@ Constant *llvm::createStrideMask(IRBuilder<> &Builder, unsigned Start,
   return ConstantVector::get(Mask);
 }
 
-Constant *llvm::createSequentialMask(IRBuilder<> &Builder, unsigned Start,
+Constant *llvm::createSequentialMask(IRBuilderBase &Builder, unsigned Start,
                                      unsigned NumInts, unsigned NumUndefs) {
   SmallVector<Constant *, 16> Mask;
   for (unsigned i = 0; i < NumInts; i++)
@@ -729,7 +806,7 @@ Constant *llvm::createSequentialMask(IRBuilder<> &Builder, unsigned Start,
 /// A helper function for concatenating vectors. This function concatenates two
 /// vectors having the same element type. If the second vector has fewer
 /// elements than the first, it is padded with undefs.
-static Value *concatenateTwoVectors(IRBuilder<> &Builder, Value *V1,
+static Value *concatenateTwoVectors(IRBuilderBase &Builder, Value *V1,
                                     Value *V2) {
   VectorType *VecTy1 = dyn_cast<VectorType>(V1->getType());
   VectorType *VecTy2 = dyn_cast<VectorType>(V2->getType());
@@ -752,7 +829,8 @@ static Value *concatenateTwoVectors(IRBuilder<> &Builder, Value *V1,
   return Builder.CreateShuffleVector(V1, V2, Mask);
 }
 
-Value *llvm::concatenateVectors(IRBuilder<> &Builder, ArrayRef<Value *> Vecs) {
+Value *llvm::concatenateVectors(IRBuilderBase &Builder,
+                                ArrayRef<Value *> Vecs) {
   unsigned NumVecs = Vecs.size();
   assert(NumVecs > 1 && "Should be at least two vectors");
 
@@ -785,8 +863,9 @@ bool llvm::maskIsAllZeroOrUndef(Value *Mask) {
     return false;
   if (ConstMask->isNullValue() || isa<UndefValue>(ConstMask))
     return true;
-  for (unsigned I = 0, E = ConstMask->getType()->getVectorNumElements(); I != E;
-       ++I) {
+  for (unsigned I = 0,
+                E = cast<VectorType>(ConstMask->getType())->getNumElements();
+       I != E; ++I) {
     if (auto *MaskElt = ConstMask->getAggregateElement(I))
       if (MaskElt->isNullValue() || isa<UndefValue>(MaskElt))
         continue;
@@ -802,8 +881,9 @@ bool llvm::maskIsAllOneOrUndef(Value *Mask) {
     return false;
   if (ConstMask->isAllOnesValue() || isa<UndefValue>(ConstMask))
     return true;
-  for (unsigned I = 0, E = ConstMask->getType()->getVectorNumElements(); I != E;
-       ++I) {
+  for (unsigned I = 0,
+                E = cast<VectorType>(ConstMask->getType())->getNumElements();
+       I != E; ++I) {
     if (auto *MaskElt = ConstMask->getAggregateElement(I))
       if (MaskElt->isAllOnesValue() || isa<UndefValue>(MaskElt))
         continue;
@@ -951,7 +1031,7 @@ void InterleavedAccessInfo::analyzeInterleaving(
     // create a group for B, we continue with the bottom-up algorithm to ensure
     // we don't break any of B's dependences.
     InterleaveGroup<Instruction> *Group = nullptr;
-    if (isStrided(DesB.Stride) && 
+    if (isStrided(DesB.Stride) &&
         (!isPredicated(B->getParent()) || EnablePredicatedInterleavedMemAccesses)) {
       Group = getInterleaveGroup(B);
       if (!Group) {
@@ -1052,8 +1132,8 @@ void InterleavedAccessInfo::analyzeInterleaving(
 
       // All members of a predicated interleave-group must have the same predicate,
       // and currently must reside in the same BB.
-      BasicBlock *BlockA = A->getParent();  
-      BasicBlock *BlockB = B->getParent();  
+      BasicBlock *BlockA = A->getParent();
+      BasicBlock *BlockB = B->getParent();
       if ((isPredicated(BlockA) || isPredicated(BlockB)) &&
           (!EnablePredicatedInterleavedMemAccesses || BlockA != BlockB))
         continue;

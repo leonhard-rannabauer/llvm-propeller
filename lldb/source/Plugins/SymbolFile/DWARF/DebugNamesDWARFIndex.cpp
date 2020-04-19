@@ -19,18 +19,14 @@ using namespace lldb;
 llvm::Expected<std::unique_ptr<DebugNamesDWARFIndex>>
 DebugNamesDWARFIndex::Create(Module &module, DWARFDataExtractor debug_names,
                              DWARFDataExtractor debug_str,
-                             DWARFDebugInfo *debug_info) {
-  if (!debug_info) {
-    return llvm::make_error<llvm::StringError>("debug info null",
-                                               llvm::inconvertibleErrorCode());
-  }
+                             SymbolFileDWARF &dwarf) {
   auto index_up = std::make_unique<DebugNames>(debug_names.GetAsLLVM(),
                                                 debug_str.GetAsLLVM());
   if (llvm::Error E = index_up->extract())
     return std::move(E);
 
   return std::unique_ptr<DebugNamesDWARFIndex>(new DebugNamesDWARFIndex(
-      module, std::move(index_up), debug_names, debug_str, *debug_info));
+      module, std::move(index_up), debug_names, debug_str, dwarf));
 }
 
 llvm::DenseSet<dw_offset_t>
@@ -169,9 +165,8 @@ void DebugNamesDWARFIndex::GetCompleteObjCClass(ConstString class_name,
       // If we find the complete version we're done.
       offsets.push_back(*ref);
       return;
-    } else {
-      incomplete_types.push_back(*ref);
     }
+    incomplete_types.push_back(*ref);
   }
 
   offsets.insert(offsets.end(), incomplete_types.begin(),

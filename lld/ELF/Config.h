@@ -90,6 +90,7 @@ struct Configuration {
   uint32_t andFeatures = 0;
   llvm::CachePruningPolicy thinLTOCachePolicy;
   llvm::StringMap<uint64_t> sectionStartMap;
+  llvm::StringRef bfdname;
   llvm::StringRef chroot;
   llvm::StringRef dynamicLinker;
   llvm::StringRef dwoDir;
@@ -198,11 +199,13 @@ struct Configuration {
   bool propellerPrintStats;
   bool propellerReorderIP = false;
   bool propellerReorderBlocks;
+  bool propellerReorderBlocksRandom = false;
   bool propellerReorderFuncs;
   bool propellerSplitFuncs;
   bool relocatable;
   bool relrPackDynRelocs;
   bool saveTemps;
+  llvm::Optional<uint32_t> shuffleSectionSeed;
   bool singleRoRx;
   bool shared;
   bool isStatic = false;
@@ -214,6 +217,7 @@ struct Configuration {
   bool timeTraceEnabled;
   bool tocOptimize;
   bool undefinedVersion;
+  bool unique;
   bool useAndroidRelrTags = false;
   bool warnBackrefs;
   bool warnCommon;
@@ -264,7 +268,7 @@ struct Configuration {
   unsigned ltoPartitions;
   unsigned ltoo;
   unsigned optimize;
-  unsigned thinLTOJobs;
+  StringRef thinLTOJobs;
   unsigned timeTraceGranularity;
   int32_t splitStackAdjustSize;
 

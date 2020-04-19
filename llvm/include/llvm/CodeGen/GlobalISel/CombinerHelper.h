@@ -62,6 +62,10 @@ public:
                  GISelKnownBits *KB = nullptr,
                  MachineDominatorTree *MDT = nullptr);
 
+  GISelKnownBits *getKnownBits() const {
+    return KB;
+  }
+
   /// MachineRegisterInfo::replaceRegWith() and inform the observer of the changes
   void replaceRegWith(MachineRegisterInfo &MRI, Register FromReg, Register ToReg) const;
 
@@ -182,6 +186,50 @@ public:
   /// Transform a multiply by a power-of-2 value to a left shift.
   bool matchCombineMulToShl(MachineInstr &MI, unsigned &ShiftVal);
   bool applyCombineMulToShl(MachineInstr &MI, unsigned &ShiftVal);
+
+  /// Reduce a shift by a constant to an unmerge and a shift on a half sized
+  /// type. This will not produce a shift smaller than \p TargetShiftSize.
+  bool matchCombineShiftToUnmerge(MachineInstr &MI, unsigned TargetShiftSize,
+                                 unsigned &ShiftVal);
+  bool applyCombineShiftToUnmerge(MachineInstr &MI, const unsigned &ShiftVal);
+  bool tryCombineShiftToUnmerge(MachineInstr &MI, unsigned TargetShiftAmount);
+
+  /// Return true if any explicit use operand on \p MI is defined by a
+  /// G_IMPLICIT_DEF.
+  bool matchAnyExplicitUseIsUndef(MachineInstr &MI);
+
+  /// Return true if all register explicit use operands on \p MI are defined by
+  /// a G_IMPLICIT_DEF.
+  bool matchAllExplicitUsesAreUndef(MachineInstr &MI);
+
+  /// Return true if a G_SHUFFLE_VECTOR instruction \p MI has an undef mask.
+  bool matchUndefShuffleVectorMask(MachineInstr &MI);
+
+  /// Replace an instruction with a G_FCONSTANT with value \p C.
+  bool replaceInstWithFConstant(MachineInstr &MI, double C);
+
+  /// Replace an instruction with a G_CONSTANT with value \p C.
+  bool replaceInstWithConstant(MachineInstr &MI, int64_t C);
+
+  /// Replace an instruction with a G_IMPLICIT_DEF.
+  bool replaceInstWithUndef(MachineInstr &MI);
+
+  /// Delete \p MI and replace all of its uses with its \p OpIdx-th operand.
+  bool replaceSingleDefInstWithOperand(MachineInstr &MI, unsigned OpIdx);
+
+  /// Return true if \p MOP1 and \p MOP2 are register operands are defined by
+  /// equivalent instructions.
+  bool matchEqualDefs(const MachineOperand &MOP1, const MachineOperand &MOP2);
+
+  /// Return true if \p MOP is defined by a G_CONSTANT with a value equal to
+  /// \p C.
+  bool matchConstantOp(const MachineOperand &MOP, int64_t C);
+
+  /// Optimize (cond ? x : x) -> x
+  bool matchSelectSameVal(MachineInstr &MI);
+
+  /// Optimize (x op x) -> x
+  bool matchBinOpSameVal(MachineInstr &MI);
 
   /// Try to transform \p MI by using all of the above
   /// combine functions. Returns true if changed.

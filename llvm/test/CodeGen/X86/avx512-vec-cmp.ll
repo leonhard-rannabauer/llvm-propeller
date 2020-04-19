@@ -315,9 +315,9 @@ define <16 x i32> @test13(<16 x float>%a, <16 x float>%b)
 define <16 x i32> @test14(<16 x i32>%a, <16 x i32>%b) {
 ; CHECK-LABEL: test14:
 ; CHECK:       ## %bb.0:
-; CHECK-NEXT:    vpsubd %zmm1, %zmm0, %zmm2 ## encoding: [0x62,0xf1,0x7d,0x48,0xfa,0xd1]
-; CHECK-NEXT:    vpcmpgtd %zmm0, %zmm2, %k1 ## encoding: [0x62,0xf1,0x6d,0x48,0x66,0xc8]
-; CHECK-NEXT:    vpsubd %zmm1, %zmm0, %zmm0 {%k1} {z} ## encoding: [0x62,0xf1,0x7d,0xc9,0xfa,0xc1]
+; CHECK-NEXT:    vpsubd %zmm1, %zmm0, %zmm1 ## encoding: [0x62,0xf1,0x7d,0x48,0xfa,0xc9]
+; CHECK-NEXT:    vpcmpgtd %zmm0, %zmm1, %k1 ## encoding: [0x62,0xf1,0x75,0x48,0x66,0xc8]
+; CHECK-NEXT:    vmovdqa32 %zmm1, %zmm0 {%k1} {z} ## encoding: [0x62,0xf1,0x7d,0xc9,0x6f,0xc1]
 ; CHECK-NEXT:    retq ## encoding: [0xc3]
   %sub_r = sub <16 x i32> %a, %b
   %cmp.i2.i = icmp sgt <16 x i32> %sub_r, %a
@@ -330,9 +330,9 @@ define <16 x i32> @test14(<16 x i32>%a, <16 x i32>%b) {
 define <8 x i64> @test15(<8 x i64>%a, <8 x i64>%b) {
 ; CHECK-LABEL: test15:
 ; CHECK:       ## %bb.0:
-; CHECK-NEXT:    vpsubq %zmm1, %zmm0, %zmm2 ## encoding: [0x62,0xf1,0xfd,0x48,0xfb,0xd1]
-; CHECK-NEXT:    vpcmpgtq %zmm0, %zmm2, %k1 ## encoding: [0x62,0xf2,0xed,0x48,0x37,0xc8]
-; CHECK-NEXT:    vpsubq %zmm1, %zmm0, %zmm0 {%k1} {z} ## encoding: [0x62,0xf1,0xfd,0xc9,0xfb,0xc1]
+; CHECK-NEXT:    vpsubq %zmm1, %zmm0, %zmm1 ## encoding: [0x62,0xf1,0xfd,0x48,0xfb,0xc9]
+; CHECK-NEXT:    vpcmpgtq %zmm0, %zmm1, %k1 ## encoding: [0x62,0xf2,0xf5,0x48,0x37,0xc8]
+; CHECK-NEXT:    vmovdqa64 %zmm1, %zmm0 {%k1} {z} ## encoding: [0x62,0xf1,0xfd,0xc9,0x6f,0xc1]
 ; CHECK-NEXT:    retq ## encoding: [0xc3]
   %sub_r = sub <8 x i64> %a, %b
   %cmp.i2.i = icmp sgt <8 x i64> %sub_r, %a
@@ -1554,9 +1554,7 @@ define <8 x i64> @cmp_swap_bug(<16 x i8>* %x, <8 x i64> %y, <8 x i64> %z) {
 ; SKX-LABEL: cmp_swap_bug:
 ; SKX:       ## %bb.0: ## %entry
 ; SKX-NEXT:    vmovdqa (%rdi), %xmm2 ## EVEX TO VEX Compression encoding: [0xc5,0xf9,0x6f,0x17]
-; SKX-NEXT:    vpshufb {{.*}}(%rip), %xmm2, %xmm2 ## EVEX TO VEX Compression xmm2 = xmm2[0,2,4,6,8,10,12,14,u,u,u,u,u,u,u,u]
-; SKX-NEXT:    ## encoding: [0xc4,0xe2,0x69,0x00,0x15,A,A,A,A]
-; SKX-NEXT:    ## fixup A - offset: 5, value: LCPI69_0-4, kind: reloc_riprel_4byte
+; SKX-NEXT:    vpmovwb %xmm2, %xmm2 ## encoding: [0x62,0xf2,0x7e,0x08,0x30,0xd2]
 ; SKX-NEXT:    vpmovb2m %xmm2, %k1 ## encoding: [0x62,0xf2,0x7e,0x08,0x29,0xca]
 ; SKX-NEXT:    vpblendmq %zmm0, %zmm1, %zmm0 {%k1} ## encoding: [0x62,0xf2,0xf5,0x49,0x64,0xc0]
 ; SKX-NEXT:    retq ## encoding: [0xc3]
@@ -1566,4 +1564,26 @@ entry:
   %2 = icmp slt <8 x i8> %1, zeroinitializer
   %3 = select <8 x i1> %2, <8 x i64> %y, <8 x i64> %z
   ret <8 x i64> %3
+}
+
+define <2 x i32> @narrow_cmp_select_reverse(<2 x i64> %x, <2 x i32> %y) nounwind {
+; AVX512-LABEL: narrow_cmp_select_reverse:
+; AVX512:       ## %bb.0:
+; AVX512-NEXT:    vpxor %xmm2, %xmm2, %xmm2 ## encoding: [0xc5,0xe9,0xef,0xd2]
+; AVX512-NEXT:    vpcmpeqq %xmm2, %xmm0, %xmm0 ## encoding: [0xc4,0xe2,0x79,0x29,0xc2]
+; AVX512-NEXT:    vpternlogq $15, %zmm0, %zmm0, %zmm0 ## encoding: [0x62,0xf3,0xfd,0x48,0x25,0xc0,0x0f]
+; AVX512-NEXT:    vpshufd $232, %xmm0, %xmm0 ## encoding: [0xc5,0xf9,0x70,0xc0,0xe8]
+; AVX512-NEXT:    ## xmm0 = xmm0[0,2,2,3]
+; AVX512-NEXT:    vpand %xmm1, %xmm0, %xmm0 ## encoding: [0xc5,0xf9,0xdb,0xc1]
+; AVX512-NEXT:    vzeroupper ## encoding: [0xc5,0xf8,0x77]
+; AVX512-NEXT:    retq ## encoding: [0xc3]
+;
+; SKX-LABEL: narrow_cmp_select_reverse:
+; SKX:       ## %bb.0:
+; SKX-NEXT:    vptestmq %xmm0, %xmm0, %k1 ## encoding: [0x62,0xf2,0xfd,0x08,0x27,0xc8]
+; SKX-NEXT:    vmovdqa32 %xmm1, %xmm0 {%k1} {z} ## encoding: [0x62,0xf1,0x7d,0x89,0x6f,0xc1]
+; SKX-NEXT:    retq ## encoding: [0xc3]
+  %mask = icmp eq <2 x i64> %x, zeroinitializer
+  %res = select <2 x i1> %mask, <2 x i32> zeroinitializer, <2 x i32> %y
+  ret <2 x i32> %res
 }

@@ -18,6 +18,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/FloatingPointMode.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <memory>
 
@@ -182,13 +183,15 @@ struct APFloatBase {
   };
 
   /// IEEE-754R 4.3: Rounding-direction attributes.
-  enum roundingMode {
-    rmNearestTiesToEven,
-    rmTowardPositive,
-    rmTowardNegative,
-    rmTowardZero,
-    rmNearestTiesToAway
-  };
+  using roundingMode = llvm::RoundingMode;
+
+  static constexpr roundingMode rmNearestTiesToEven =
+                                                RoundingMode::NearestTiesToEven;
+  static constexpr roundingMode rmTowardPositive = RoundingMode::TowardPositive;
+  static constexpr roundingMode rmTowardNegative = RoundingMode::TowardNegative;
+  static constexpr roundingMode rmTowardZero     = RoundingMode::TowardZero;
+  static constexpr roundingMode rmNearestTiesToAway =
+                                                RoundingMode::NearestTiesToAway;
 
   /// IEEE-754R 7: Default exception handling.
   ///
@@ -1036,6 +1039,13 @@ public:
     APFLOAT_DISPATCH_ON_SEMANTICS(next(nextDown));
   }
 
+  /// Negate an APFloat.
+  APFloat operator-() const {
+    APFloat Result(*this);
+    Result.changeSign();
+    return Result;
+  }
+
   /// Add two APFloats, rounding ties to the nearest even.
   /// No error checking.
   APFloat operator+(const APFloat &RHS) const {
@@ -1118,7 +1128,27 @@ public:
   double convertToDouble() const { return getIEEE().convertToDouble(); }
   float convertToFloat() const { return getIEEE().convertToFloat(); }
 
-  bool operator==(const APFloat &) const = delete;
+  bool operator==(const APFloat &RHS) const { return compare(RHS) == cmpEqual; }
+
+  bool operator!=(const APFloat &RHS) const { return compare(RHS) != cmpEqual; }
+
+  bool operator<(const APFloat &RHS) const {
+    return compare(RHS) == cmpLessThan;
+  }
+
+  bool operator>(const APFloat &RHS) const {
+    return compare(RHS) == cmpGreaterThan;
+  }
+
+  bool operator<=(const APFloat &RHS) const {
+    cmpResult Res = compare(RHS);
+    return Res == cmpLessThan || Res == cmpEqual;
+  }
+
+  bool operator>=(const APFloat &RHS) const {
+    cmpResult Res = compare(RHS);
+    return Res == cmpGreaterThan || Res == cmpEqual;
+  }
 
   cmpResult compare(const APFloat &RHS) const {
     assert(&getSemantics() == &RHS.getSemantics() &&
@@ -1250,7 +1280,7 @@ inline APFloat minnum(const APFloat &A, const APFloat &B) {
     return B;
   if (B.isNaN())
     return A;
-  return (B.compare(A) == APFloat::cmpLessThan) ? B : A;
+  return B < A ? B : A;
 }
 
 /// Implements IEEE maxNum semantics. Returns the larger of the 2 arguments if
@@ -1261,7 +1291,7 @@ inline APFloat maxnum(const APFloat &A, const APFloat &B) {
     return B;
   if (B.isNaN())
     return A;
-  return (A.compare(B) == APFloat::cmpLessThan) ? B : A;
+  return A < B ? B : A;
 }
 
 /// Implements IEEE 754-2018 minimum semantics. Returns the smaller of 2
@@ -1274,7 +1304,7 @@ inline APFloat minimum(const APFloat &A, const APFloat &B) {
     return B;
   if (A.isZero() && B.isZero() && (A.isNegative() != B.isNegative()))
     return A.isNegative() ? A : B;
-  return (B.compare(A) == APFloat::cmpLessThan) ? B : A;
+  return B < A ? B : A;
 }
 
 /// Implements IEEE 754-2018 maximum semantics. Returns the larger of 2
@@ -1287,7 +1317,7 @@ inline APFloat maximum(const APFloat &A, const APFloat &B) {
     return B;
   if (A.isZero() && B.isZero() && (A.isNegative() != B.isNegative()))
     return A.isNegative() ? B : A;
-  return (A.compare(B) == APFloat::cmpLessThan) ? B : A;
+  return A < B ? B : A;
 }
 
 } // namespace llvm

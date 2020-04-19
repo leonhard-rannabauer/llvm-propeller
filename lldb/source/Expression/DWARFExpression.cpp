@@ -1182,7 +1182,7 @@ bool DWARFExpression::Evaluate(
                 break;
               default:
                 stack.back().GetScalar() =
-                    addr_data.GetPointer(&addr_data_offset);
+                    addr_data.GetAddress(&addr_data_offset);
               }
               stack.back().ClearContext();
             } else {
@@ -2318,6 +2318,12 @@ bool DWARFExpression::Evaluate(
     // rather is a constant value.  The value from the top of the stack is the
     // value to be used.  This is the actual object value and not the location.
     case DW_OP_stack_value:
+      if (stack.empty()) {
+        if (error_ptr)
+          error_ptr->SetErrorString(
+              "Expression stack needs at least 1 item for DW_OP_stack_value.");
+        return false;
+      }
       stack.back().SetValueType(Value::eValueTypeScalar);
       break;
 

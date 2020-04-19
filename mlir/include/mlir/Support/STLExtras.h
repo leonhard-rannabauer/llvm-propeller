@@ -88,21 +88,6 @@ inline void interleaveComma(const Container &c, raw_ostream &os) {
   interleaveComma(c, os, [&](const T &a) { os << a; });
 }
 
-/// A special type used to provide an address for a given class that can act as
-/// a unique identifier during pass registration.
-/// Note: We specify an explicit alignment here to allow use with PointerIntPair
-/// and other utilities/data structures that require a known pointer alignment.
-struct alignas(8) ClassID {
-  template <typename T> static ClassID *getID() {
-    static ClassID id;
-    return &id;
-  }
-  template <template <typename T> class Trait> static ClassID *getID() {
-    static ClassID id;
-    return &id;
-  }
-};
-
 /// Utilities for detecting if a given trait holds for some set of arguments
 /// 'Args'. For example, the given trait could be used to detect if a given type
 /// has a copy assignment operator:
@@ -233,6 +218,12 @@ public:
     return DerivedT::dereference_iterator(base, index);
   }
 
+  /// Compare this range with another.
+  template <typename OtherT> bool operator==(const OtherT &other) {
+    return size() == llvm::size(other) &&
+           std::equal(begin(), end(), other.begin());
+  }
+
   /// Return the size of this range.
   size_t size() const { return count; }
 
@@ -259,6 +250,12 @@ public:
   /// Take the first n elements.
   DerivedT take_front(size_t n = 1) const {
     return n < size() ? drop_back(size() - n)
+                      : static_cast<const DerivedT &>(*this);
+  }
+
+  /// Take the last n elements.
+  DerivedT take_back(size_t n = 1) const {
+    return n < size() ? drop_front(size() - n)
                       : static_cast<const DerivedT &>(*this);
   }
 
@@ -333,6 +330,26 @@ template <typename ContainerTy> auto make_second_range(ContainerTy &&c) {
       });
 }
 
+/// A range class that repeats a specific value for a set number of times.
+template <typename T>
+class RepeatRange
+    : public detail::indexed_accessor_range_base<RepeatRange<T>, T, const T> {
+public:
+  using detail::indexed_accessor_range_base<
+      RepeatRange<T>, T, const T>::indexed_accessor_range_base;
+
+  /// Given that we are repeating a specific value, we can simply return that
+  /// value when offsetting the base or dereferencing the iterator.
+  static T offset_base(const T &val, ptrdiff_t) { return val; }
+  static const T &dereference_iterator(const T &val, ptrdiff_t) { return val; }
+};
+
+/// Make a range that repeats the given value 'n' times.
+template <typename ValueTy>
+RepeatRange<ValueTy> make_repeated_range(const ValueTy &value, size_t n) {
+  return RepeatRange<ValueTy>(value, n);
+}
+
 /// Returns true of the given range only contains a single element.
 template <typename ContainerTy> bool has_single_element(ContainerTy &&c) {
   auto it = std::begin(c), e = std::end(c);
@@ -376,6 +393,10 @@ struct FunctionTraits<ReturnType (*)(Args...), false> {
   template <size_t i>
   using arg_t = typename std::tuple_element<i, std::tuple<Args...>>::type;
 };
+/// Overload for non-class function type references.
+template <typename ReturnType, typename... Args>
+struct FunctionTraits<ReturnType (&)(Args...), false>
+    : public FunctionTraits<ReturnType (*)(Args...)> {};
 } // end namespace mlir
 
 // Allow tuples to be usable as DenseMap keys.

@@ -10,8 +10,39 @@
 namespace lld {
 namespace propeller {
 
+// This merges the bundles between (and including) two bundles in the chain's
+// bundle list. Two bundles can be merged together if they are from the same
+// function (cfg).
+// Returns true if any bundles were merged.
+bool NodeChain::bundleNodes(
+    std::list<std::unique_ptr<CFGNodeBundle>>::iterator begin,
+    std::list<std::unique_ptr<CFGNodeBundle>>::iterator end) {
+  CFGNodeBundle *bundle =
+      (begin == nodeBundles.begin()) ? nullptr : (*std::prev(begin)).get();
+  bool changed = false;
+  for (auto it = begin; it != end;) {
+    if (!bundle || (*it)->delegateNode->controlFlowGraph !=
+                       bundle->delegateNode->controlFlowGraph) {
+      bundle = (*it).get();
+      it++;
+    } else {
+      changed = true;
+      bundle->merge((*it).get());
+      it = nodeBundles.erase(it);
+    }
+  }
+  return changed;
+}
+
+// This merges all the bundles in the chain's bundle list.
+bool NodeChain::bundleNodes() {
+  return bundleNodes(nodeBundles.begin(), nodeBundles.end());
+}
+
+// Get the chain containing a given node.
 NodeChain *getNodeChain(const CFGNode *n) { return n->bundle->chain; }
 
+// Get the offset of a node in its containing chain.
 int64_t getNodeOffset(const CFGNode *n) {
   return n->bundle->chainOffset + n->bundleOffset;
 }
@@ -22,15 +53,16 @@ toString(const NodeChain &c,
   std::string str;
   if (c.controlFlowGraph)
     str += c.controlFlowGraph->name.str();
-  str += " [ ";
+  str += " {{{ ";
   for (auto bundleIt = c.nodeBundles.begin(); bundleIt != c.nodeBundles.end();
        ++bundleIt) {
     if (bundleIt == slicePos)
       str += "\n....SLICE POSITION....\n";
+
+    str += " << bundle [offset= " + std::to_string((*bundleIt)->chainOffset) +
+           " size=" + std::to_string((*bundleIt)->size) +
+           " freq=" + std::to_string((*bundleIt)->freq) + " ] ";
     for (auto *n : (*bundleIt)->nodes) {
-      str +=
-          " << bundle [coffset= " + std::to_string((*bundleIt)->chainOffset) +
-          "] ";
       if (!c.controlFlowGraph)
         str += std::to_string(n->controlFlowGraph->getEntryNode()->mappedAddr) +
                ":";
@@ -40,13 +72,13 @@ toString(const NodeChain &c,
                                   n->controlFlowGraph->name.size() - 4);
       str += " (size=" + std::to_string(n->shSize) +
              ", freq=" + std::to_string(n->freq) +
-             ", boffset=" + std::to_string(n->bundleOffset) + ")";
+             ", offset=" + std::to_string(n->bundleOffset) + ")";
       if (n != (*bundleIt)->nodes.back())
         str += " -> ";
     }
     str += " >> ";
   }
-  str += " ]";
+  str += " }}}";
   str += " score: " + std::to_string(c.score);
   return str;
 }

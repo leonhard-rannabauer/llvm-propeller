@@ -237,6 +237,9 @@ public:
   void setSupportsDefaultOutlining(bool Enable) {
     Options.SupportsDefaultOutlining = Enable;
   }
+  void setSupportsDebugEntryValues(bool Enable) {
+    Options.SupportsDebugEntryValues = Enable;
+  }
 
   bool shouldPrintMachineCode() const { return Options.PrintMachineCode; }
 
@@ -259,20 +262,13 @@ public:
 
   /// If basic blocks should be emitted into their own section,
   /// corresponding to -fbasicblock-sections.
-  llvm::BasicBlockSection::SectionMode getBBSections() const {
+  llvm::BasicBlockSection getBBSectionsType() const {
     return Options.BBSections;
   }
 
-  /// Return true if a given function's name in the list of functions for which
-  /// basic block sections must be generated.
-  bool isFunctionInBBSectionsList(const StringRef &name) const {
-    return Options.BBSectionsList.find(name) != Options.BBSectionsList.end();
-  }
-
-  /// For a given function, return the set of basic block id's that must be
-  /// emitted in a unique section.
-  SmallSet<unsigned, 4> getBBSectionsSet(const StringRef &name) const {
-    return Options.BBSectionsList.lookup(name);
+  /// Get the list of functions and basic block ids that need unique sections.
+  const MemoryBuffer *getBBSectionsFuncListBuf() const {
+    return Options.BBSectionsFuncListBuf.get();
   }
 
   /// Get a \c TargetIRAnalysis appropriate for the target.
@@ -327,6 +323,10 @@ public:
   void getNameWithPrefix(SmallVectorImpl<char> &Name, const GlobalValue *GV,
                          Mangler &Mang, bool MayAlwaysUsePrivate = false) const;
   MCSymbol *getSymbol(const GlobalValue *GV) const;
+
+  /// The integer bit size to use for SjLj based exception handling.
+  static constexpr unsigned DefaultSjLjDataSize = 32;
+  virtual unsigned getSjLjDataSize() const { return DefaultSjLjDataSize; }
 };
 
 /// This class describes a target machine that is implemented with the LLVM
@@ -382,11 +382,13 @@ public:
                      raw_pwrite_stream *DwoOut, CodeGenFileType FileType,
                      MCContext &Context);
 
-  /// True if the target uses physical regs at Prolog/Epilog insertion
-  /// time. If true (most machines), all vregs must be allocated before
-  /// PEI. If false (virtual-register machines), then callee-save register
-  /// spilling and scavenging are not needed or used.
-  virtual bool usesPhysRegsForPEI() const { return true; }
+  /// True if the target uses physical regs (as nearly all targets do). False
+  /// for stack machines such as WebAssembly and other virtual-register
+  /// machines. If true, all vregs must be allocated before PEI. If false, then
+  /// callee-save register spilling and scavenging are not needed or used. If
+  /// false, implicitly defined registers will still be assumed to be physical
+  /// registers, except that variadic defs will be allocated vregs.
+  virtual bool usesPhysRegsForValues() const { return true; }
 
   /// True if the target wants to use interprocedural register allocation by
   /// default. The -enable-ipra flag can be used to override this.

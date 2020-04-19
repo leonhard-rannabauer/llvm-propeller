@@ -8,10 +8,8 @@
 
 #include "mlir/IR/AffineMap.h"
 #include "AffineMapDetail.h"
-#include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/StandardTypes.h"
-#include "mlir/Support/Functional.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Support/MathExtras.h"
 #include "llvm/ADT/StringRef.h"
@@ -127,7 +125,7 @@ static void getMaxDimAndSymbol(ArrayRef<AffineExprContainer> exprsList,
 }
 
 template <typename AffineExprContainer>
-SmallVector<AffineMap, 4>
+static SmallVector<AffineMap, 4>
 inferFromExprList(ArrayRef<AffineExprContainer> exprsList) {
   int64_t maxDim = -1, maxSym = -1;
   getMaxDimAndSymbol(exprsList, maxDim, maxSym);
@@ -257,7 +255,8 @@ AffineMap AffineMap::replaceDimsAndSymbols(ArrayRef<AffineExpr> dimReplacements,
     results.push_back(
         expr.replaceDimsAndSymbols(dimReplacements, symReplacements));
 
-  return get(numResultDims, numResultSyms, results);
+  return results.empty() ? get(numResultDims, 0, getContext())
+                         : get(numResultDims, numResultSyms, results);
 }
 
 AffineMap AffineMap::compose(AffineMap map) {
@@ -281,7 +280,8 @@ AffineMap AffineMap::compose(AffineMap map) {
   exprs.reserve(getResults().size());
   for (auto expr : getResults())
     exprs.push_back(expr.compose(newMap));
-  return AffineMap::get(numDims, numSymbols, exprs);
+  return exprs.empty() ? AffineMap::get(numDims, 0, map.getContext())
+                       : AffineMap::get(numDims, numSymbols, exprs);
 }
 
 bool AffineMap::isProjectedPermutation() {
@@ -324,8 +324,17 @@ AffineMap mlir::simplifyAffineMap(AffineMap map) {
   return AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs);
 }
 
+AffineMap mlir::removeDuplicateExprs(AffineMap map) {
+  auto results = map.getResults();
+  SmallVector<AffineExpr, 4> uniqueExprs(results.begin(), results.end());
+  uniqueExprs.erase(std::unique(uniqueExprs.begin(), uniqueExprs.end()),
+                    uniqueExprs.end());
+  return AffineMap::get(map.getNumDims(), map.getNumSymbols(), uniqueExprs,
+                        map.getContext());
+}
+
 AffineMap mlir::inversePermutation(AffineMap map) {
-  if (!map)
+  if (map.isEmpty())
     return map;
   assert(map.getNumSymbols() == 0 && "expected map without symbols");
   SmallVector<AffineExpr, 4> exprs(map.getNumDims());
@@ -351,18 +360,18 @@ AffineMap mlir::inversePermutation(AffineMap map) {
 AffineMap mlir::concatAffineMaps(ArrayRef<AffineMap> maps) {
   unsigned numResults = 0;
   for (auto m : maps)
-    numResults += m ? m.getNumResults() : 0;
+    numResults += m.getNumResults();
   unsigned numDims = 0;
   SmallVector<AffineExpr, 8> results;
   results.reserve(numResults);
   for (auto m : maps) {
-    if (!m)
-      continue;
     assert(m.getNumSymbols() == 0 && "expected map without symbols");
     results.append(m.getResults().begin(), m.getResults().end());
     numDims = std::max(m.getNumDims(), numDims);
   }
-  return numDims == 0 ? AffineMap() : AffineMap::get(numDims, 0, results);
+  return results.empty() ? AffineMap::get(numDims, /*numSymbols=*/0,
+                                          maps.front().getContext())
+                         : AffineMap::get(numDims, /*numSymbols=*/0, results);
 }
 
 //===----------------------------------------------------------------------===//

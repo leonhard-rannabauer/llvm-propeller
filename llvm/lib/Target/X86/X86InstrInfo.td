@@ -16,7 +16,10 @@
 // X86 specific DAG Nodes.
 //
 
-def SDTX86CmpTest : SDTypeProfile<1, 2, [SDTCisVT<0, i32>, SDTCisSameAs<1, 2>]>;
+def SDTX86CmpTest : SDTypeProfile<1, 2, [SDTCisVT<0, i32>, SDTCisInt<1>,
+                                         SDTCisSameAs<1, 2>]>;
+def SDTX86FCmp    : SDTypeProfile<1, 2, [SDTCisVT<0, i32>, SDTCisFP<1>,
+                                         SDTCisSameAs<1, 2>]>;
 
 def SDTX86Cmps : SDTypeProfile<1, 3, [SDTCisFP<0>, SDTCisSameAs<1, 2>, SDTCisVT<3, i8>]>;
 //def SDTX86Cmpss : SDTypeProfile<1, 3, [SDTCisVT<0, f32>, SDTCisSameAs<1, 2>, SDTCisVT<3, i8>]>;
@@ -140,12 +143,13 @@ def X86MFence : SDNode<"X86ISD::MFENCE", SDT_X86MEMBARRIER,
 
 def X86bsf     : SDNode<"X86ISD::BSF",      SDTUnaryArithWithFlags>;
 def X86bsr     : SDNode<"X86ISD::BSR",      SDTUnaryArithWithFlags>;
-def X86shld    : SDNode<"X86ISD::SHLD",     SDTIntShiftDOp>;
-def X86shrd    : SDNode<"X86ISD::SHRD",     SDTIntShiftDOp>;
+def X86fshl    : SDNode<"X86ISD::FSHL",     SDTIntShiftDOp>;
+def X86fshr    : SDNode<"X86ISD::FSHR",     SDTIntShiftDOp>;
 
 def X86cmp     : SDNode<"X86ISD::CMP" ,     SDTX86CmpTest>;
-def X86strict_fcmp : SDNode<"X86ISD::STRICT_FCMP", SDTX86CmpTest, [SDNPHasChain]>;
-def X86strict_fcmps : SDNode<"X86ISD::STRICT_FCMPS", SDTX86CmpTest, [SDNPHasChain]>;
+def X86fcmp    : SDNode<"X86ISD::FCMP",     SDTX86FCmp>;
+def X86strict_fcmp : SDNode<"X86ISD::STRICT_FCMP", SDTX86FCmp, [SDNPHasChain]>;
+def X86strict_fcmps : SDNode<"X86ISD::STRICT_FCMPS", SDTX86FCmp, [SDNPHasChain]>;
 def X86bt      : SDNode<"X86ISD::BT",       SDTX86CmpTest>;
 
 def X86cmov    : SDNode<"X86ISD::CMOV",     SDTX86Cmov>;
@@ -382,7 +386,7 @@ class X86VMemOperand<RegisterClass RC, string printMethod,
 def anymem : X86MemOperand<"printanymem">;
 def X86any_fcmp : PatFrags<(ops node:$lhs, node:$rhs),
                           [(X86strict_fcmp node:$lhs, node:$rhs),
-                           (X86cmp node:$lhs, node:$rhs)]>;
+                           (X86fcmp node:$lhs, node:$rhs)]>;
 
 // FIXME: Right now we allow any size during parsing, but we might want to
 // restrict to only unsized memory.
@@ -951,18 +955,20 @@ def HasCmpxchg8b : Predicate<"Subtarget->hasCmpxchg8b()">;
 def HasCmpxchg16b: Predicate<"Subtarget->hasCmpxchg16b()">;
 def HasPCONFIG   : Predicate<"Subtarget->hasPCONFIG()">;
 def HasENQCMD    : Predicate<"Subtarget->hasENQCMD()">;
+def HasSERIALIZE : Predicate<"Subtarget->hasSERIALIZE()">;
+def HasTSXLDTRK  : Predicate<"Subtarget->hasTSXLDTRK()">;
 def Not64BitMode : Predicate<"!Subtarget->is64Bit()">,
-                             AssemblerPredicate<"!Mode64Bit", "Not 64-bit mode">;
+                             AssemblerPredicate<(all_of (not Mode64Bit)), "Not 64-bit mode">;
 def In64BitMode  : Predicate<"Subtarget->is64Bit()">,
-                             AssemblerPredicate<"Mode64Bit", "64-bit mode">;
+                             AssemblerPredicate<(all_of Mode64Bit), "64-bit mode">;
 def IsLP64  : Predicate<"Subtarget->isTarget64BitLP64()">;
 def NotLP64 : Predicate<"!Subtarget->isTarget64BitLP64()">;
 def In16BitMode  : Predicate<"Subtarget->is16Bit()">,
-                             AssemblerPredicate<"Mode16Bit", "16-bit mode">;
+                             AssemblerPredicate<(all_of Mode16Bit), "16-bit mode">;
 def Not16BitMode : Predicate<"!Subtarget->is16Bit()">,
-                             AssemblerPredicate<"!Mode16Bit", "Not 16-bit mode">;
+                             AssemblerPredicate<(all_of (not Mode16Bit)), "Not 16-bit mode">;
 def In32BitMode  : Predicate<"Subtarget->is32Bit()">,
-                             AssemblerPredicate<"Mode32Bit", "32-bit mode">;
+                             AssemblerPredicate<(all_of Mode32Bit), "32-bit mode">;
 def IsWin64      : Predicate<"Subtarget->isTargetWin64()">;
 def NotWin64     : Predicate<"!Subtarget->isTargetWin64()">;
 def NotWin64WithoutFP : Predicate<"!Subtarget->isTargetWin64() ||"
@@ -999,8 +1005,8 @@ def HasFastLZCNT : Predicate<"Subtarget->hasFastLZCNT()">;
 def HasFastSHLDRotate : Predicate<"Subtarget->hasFastSHLDRotate()">;
 def HasERMSB : Predicate<"Subtarget->hasERMSB()">;
 def HasMFence    : Predicate<"Subtarget->hasMFence()">;
-def UseRetpolineIndirectCalls : Predicate<"Subtarget->useRetpolineIndirectCalls()">;
-def NotUseRetpolineIndirectCalls : Predicate<"!Subtarget->useRetpolineIndirectCalls()">;
+def UseIndirectThunkCalls : Predicate<"Subtarget->useIndirectThunkCalls()">;
+def NotUseIndirectThunkCalls : Predicate<"!Subtarget->useIndirectThunkCalls()">;
 
 //===----------------------------------------------------------------------===//
 // X86 Instruction Format Definitions.
@@ -2165,24 +2171,24 @@ def CMPXCHG16B : RI<0xC7, MRM1m, (outs), (ins i128mem:$dst),
 
 // Lock instruction prefix
 let SchedRW = [WriteMicrocoded] in
-def LOCK_PREFIX : I<0xF0, RawFrm, (outs),  (ins), "lock", []>;
+def LOCK_PREFIX : I<0xF0, PrefixByte, (outs),  (ins), "lock", []>;
 
 let SchedRW = [WriteNop] in {
 
 // Rex64 instruction prefix
-def REX64_PREFIX : I<0x48, RawFrm, (outs),  (ins), "rex64", []>,
+def REX64_PREFIX : I<0x48, PrefixByte, (outs),  (ins), "rex64", []>,
                      Requires<[In64BitMode]>;
 
 // Data16 instruction prefix
-def DATA16_PREFIX : I<0x66, RawFrm, (outs),  (ins), "data16", []>;
+def DATA16_PREFIX : I<0x66, PrefixByte, (outs),  (ins), "data16", []>;
 } // SchedRW
 
 // Repeat string operation instruction prefixes
 let Defs = [ECX], Uses = [ECX,DF], SchedRW = [WriteMicrocoded] in {
 // Repeat (used with INS, OUTS, MOVS, LODS and STOS)
-def REP_PREFIX : I<0xF3, RawFrm, (outs),  (ins), "rep", []>;
+def REP_PREFIX : I<0xF3, PrefixByte, (outs),  (ins), "rep", []>;
 // Repeat while not equal (used with CMPS and SCAS)
-def REPNE_PREFIX : I<0xF2, RawFrm, (outs),  (ins), "repne", []>;
+def REPNE_PREFIX : I<0xF2, PrefixByte, (outs),  (ins), "repne", []>;
 }
 
 // String manipulation instructions
@@ -2858,6 +2864,23 @@ def : InstAlias<"clzero\t{%eax|eax}", (CLZERO32r)>, Requires<[Not64BitMode]>;
 def : InstAlias<"clzero\t{%rax|rax}", (CLZERO64r)>, Requires<[In64BitMode]>;
 
 //===----------------------------------------------------------------------===//
+// SERIALIZE Instruction
+//
+def SERIALIZE : I<0x01, MRM_E8, (outs), (ins), "serialize",
+                  [(int_x86_serialize)]>, PS,
+                  Requires<[HasSERIALIZE]>;
+
+//===----------------------------------------------------------------------===//
+// TSXLDTRK - TSX Suspend Load Address Tracking
+//
+let Predicates = [HasTSXLDTRK] in {
+  def XSUSLDTRK : I<0x01, MRM_E8, (outs), (ins), "xsusldtrk",
+                    [(int_x86_xsusldtrk)]>, XD;
+  def XRESLDTRK : I<0x01, MRM_E9, (outs), (ins), "xresldtrk",
+                    [(int_x86_xresldtrk)]>, XD;
+}
+
+//===----------------------------------------------------------------------===//
 // Pattern fragments to auto generate TBM instructions.
 //===----------------------------------------------------------------------===//
 
@@ -2915,6 +2938,11 @@ let Predicates = [HasTBM] in {
             (TZMSK64rr GR64:$src)>;
 
   // Patterns to match flag producing ops.
+  def : Pat<(and_flag_nocf GR32:$src, (add GR32:$src, 1)),
+            (BLCFILL32rr GR32:$src)>;
+  def : Pat<(and_flag_nocf GR64:$src, (add GR64:$src, 1)),
+            (BLCFILL64rr GR64:$src)>;
+
   def : Pat<(or_flag_nocf GR32:$src, (not (add GR32:$src, 1))),
             (BLCI32rr GR32:$src)>;
   def : Pat<(or_flag_nocf GR64:$src, (not (add GR64:$src, 1))),

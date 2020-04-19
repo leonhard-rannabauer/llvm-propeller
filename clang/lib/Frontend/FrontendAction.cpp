@@ -787,7 +787,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
       auto Kind = CurrentModule->IsSystem ? SrcMgr::C_System : SrcMgr::C_User;
       auto &SourceMgr = CI.getSourceManager();
       auto BufferID = SourceMgr.createFileID(std::move(Buffer), Kind);
-      assert(BufferID.isValid() && "couldn't creaate module buffer ID");
+      assert(BufferID.isValid() && "couldn't create module buffer ID");
       SourceMgr.setMainFileID(BufferID);
     }
   }
@@ -840,7 +840,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
       source = createChainedIncludesSource(CI, FinalReader);
       if (!source)
         goto failure;
-      CI.setModuleManager(static_cast<ASTReader *>(FinalReader.get()));
+      CI.setASTReader(static_cast<ASTReader *>(FinalReader.get()));
       CI.getASTContext().setExternalSource(source);
     } else if (CI.getLangOpts().Modules ||
                !CI.getPreprocessorOpts().ImplicitPCHInclude.empty()) {
@@ -870,7 +870,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
         if (!CI.getASTContext().getExternalSource())
           goto failure;
       }
-      // If modules are enabled, create the module manager before creating
+      // If modules are enabled, create the AST reader before creating
       // any builtins, so that all declarations know that they might be
       // extended by an external source.
       if (CI.getLangOpts().Modules || !CI.hasASTContext() ||
@@ -1080,6 +1080,9 @@ void WrapperFrontendAction::ExecuteAction() {
 }
 void WrapperFrontendAction::EndSourceFileAction() {
   WrappedAction->EndSourceFileAction();
+}
+bool WrapperFrontendAction::shouldEraseOutputFiles() {
+  return WrappedAction->shouldEraseOutputFiles();
 }
 
 bool WrapperFrontendAction::usesPreprocessorOnly() const {

@@ -827,7 +827,7 @@ void ARMExpandPseudo::ExpandMOV32BitImm(MachineBasicBlock &MBB,
                                         MachineBasicBlock::iterator &MBBI) {
   MachineInstr &MI = *MBBI;
   unsigned Opcode = MI.getOpcode();
-  unsigned PredReg = 0;
+  Register PredReg;
   ARMCC::CondCodes Pred = getInstrPredicate(MI, PredReg);
   Register DstReg = MI.getOperand(0).getReg();
   bool DstIsDead = MI.getOperand(0).isDead();
@@ -852,10 +852,13 @@ void ARMExpandPseudo::ExpandMOV32BitImm(MachineBasicBlock &MBB,
     unsigned ImmVal = (unsigned)MO.getImm();
     unsigned SOImmValV1 = ARM_AM::getSOImmTwoPartFirst(ImmVal);
     unsigned SOImmValV2 = ARM_AM::getSOImmTwoPartSecond(ImmVal);
+    unsigned MIFlags = MI.getFlags();
     LO16 = LO16.addImm(SOImmValV1);
     HI16 = HI16.addImm(SOImmValV2);
     LO16.cloneMemRefs(MI);
     HI16.cloneMemRefs(MI);
+    LO16.setMIFlags(MIFlags);
+    HI16.setMIFlags(MIFlags);
     LO16.addImm(Pred).addReg(PredReg).add(condCodeOp());
     HI16.addImm(Pred).addReg(PredReg).add(condCodeOp());
     if (isCC)
@@ -867,6 +870,7 @@ void ARMExpandPseudo::ExpandMOV32BitImm(MachineBasicBlock &MBB,
 
   unsigned LO16Opc = 0;
   unsigned HI16Opc = 0;
+  unsigned MIFlags = MI.getFlags();
   if (Opcode == ARM::t2MOVi32imm || Opcode == ARM::t2MOVCCi32imm) {
     LO16Opc = ARM::t2MOVi16;
     HI16Opc = ARM::t2MOVTi16;
@@ -879,6 +883,9 @@ void ARMExpandPseudo::ExpandMOV32BitImm(MachineBasicBlock &MBB,
   HI16 = BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(HI16Opc))
     .addReg(DstReg, RegState::Define | getDeadRegState(DstIsDead))
     .addReg(DstReg);
+
+  LO16.setMIFlags(MIFlags);
+  HI16.setMIFlags(MIFlags);
 
   switch (MO.getType()) {
   case MachineOperand::MO_Immediate: {
@@ -1360,17 +1367,18 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
         // If there's dynamic realignment, adjust for it.
         if (RI.needsStackRealignment(MF)) {
           MachineFrameInfo &MFI = MF.getFrameInfo();
-          unsigned MaxAlign = MFI.getMaxAlignment();
+          Align MaxAlign = MFI.getMaxAlign();
           assert (!AFI->isThumb1OnlyFunction());
           // Emit bic r6, r6, MaxAlign
-          assert(MaxAlign <= 256 && "The BIC instruction cannot encode "
-                                    "immediates larger than 256 with all lower "
-                                    "bits set.");
+          assert(MaxAlign <= Align(256) &&
+                 "The BIC instruction cannot encode "
+                 "immediates larger than 256 with all lower "
+                 "bits set.");
           unsigned bicOpc = AFI->isThumbFunction() ?
             ARM::t2BICri : ARM::BICri;
           BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(bicOpc), ARM::R6)
               .addReg(ARM::R6, RegState::Kill)
-              .addImm(MaxAlign - 1)
+              .addImm(MaxAlign.value() - 1)
               .add(predOps(ARMCC::AL))
               .add(condCodeOp());
         }
@@ -1952,6 +1960,24 @@ bool ARMExpandPseudo::ExpandMI(MachineBasicBlock &MBB,
       }
       MIB.cloneMemRefs(MI);
       for (unsigned i = 1; i < MI.getNumOperands(); ++i) MIB.add(MI.getOperand(i));
+      MI.eraseFromParent();
+      return true;
+    }
+    case ARM::LOADDUAL:
+    case ARM::STOREDUAL: {
+      Register PairReg = MI.getOperand(0).getReg();
+
+      MachineInstrBuilder MIB =
+          BuildMI(MBB, MBBI, MI.getDebugLoc(),
+                  TII->get(Opcode == ARM::LOADDUAL ? ARM::LDRD : ARM::STRD))
+              .addReg(TRI->getSubReg(PairReg, ARM::gsub_0),
+                      Opcode == ARM::LOADDUAL ? RegState::Define : 0)
+              .addReg(TRI->getSubReg(PairReg, ARM::gsub_1),
+                      Opcode == ARM::LOADDUAL ? RegState::Define : 0);
+      for (unsigned i = 1; i < MI.getNumOperands(); i++)
+        MIB.add(MI.getOperand(i));
+      MIB.add(predOps(ARMCC::AL));
+      MIB.cloneMemRefs(MI);
       MI.eraseFromParent();
       return true;
     }

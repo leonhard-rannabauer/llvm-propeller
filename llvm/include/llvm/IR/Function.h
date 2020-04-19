@@ -96,11 +96,6 @@ private:
 
   friend class SymbolTableListTraits<Function>;
 
-  /// Whether Basic Block Sections is enabled for this function.
-  bool BBSections = false;
-  /// Whether Basic Block Labels is enabled for this function.
-  bool BasicBlockLabels = false;
-
   /// hasLazyArguments/CheckLazyArguments - The argument list of a function is
   /// built on demand, so that the list isn't allocated until the first client
   /// needs it.  The hasLazyArguments predicate returns true if the arg list
@@ -164,18 +159,6 @@ public:
   /// within this function.
   unsigned getInstructionCount() const;
 
-  /// Returns true if this function has basic block sections enabled.
-  bool getBBSections() const { return BBSections; }
-
-  /// Indicates that basic block sections is enabled for this function.
-  void setBBSections(bool value) { BBSections = value; }
-
-  /// Returns true if this function has basic block labels enabled.
-  bool getBasicBlockLabels() const { return BasicBlockLabels; }
-
-  /// Indicates that basic block labels is enabled for this function.
-  void setBasicBlockLabels(bool value) { BasicBlockLabels = value; }
-
   /// Returns the FunctionType for me.
   FunctionType *getFunctionType() const {
     return cast<FunctionType>(getValueType());
@@ -213,6 +196,11 @@ public:
   /// It's possible for this function to return true while getIntrinsicID()
   /// returns Intrinsic::not_intrinsic!
   bool isIntrinsic() const { return HasLLVMReservedName; }
+
+  /// Returns true if the function is one of the "Constrained Floating-Point
+  /// Intrinsics". Returns false if not, and returns false when
+  /// getIntrinsicID() returns Intrinsic::not_intrinsic.
+  bool isConstrainedFPIntrinsic() const;
 
   static Intrinsic::ID lookupIntrinsicID(StringRef Name);
 
@@ -364,6 +352,13 @@ public:
             AttributeSets.getStackAlignment(AttributeList::FunctionIndex))
       return MA->value();
     return 0;
+  }
+
+  /// Return the stack alignment for the function.
+  MaybeAlign getFnStackAlign() const {
+    if (!hasFnAttribute(Attribute::StackAlignment))
+      return None;
+    return AttributeSets.getStackAlignment(AttributeList::FunctionIndex);
   }
 
   /// hasGC/getGC/setGC/clearGC - The name of the garbage collection algorithm

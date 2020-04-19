@@ -128,13 +128,15 @@ static bool isLeakCheckerRoot(GlobalVariable *GV) {
     Type *Ty = Types.pop_back_val();
     switch (Ty->getTypeID()) {
       default: break;
-      case Type::PointerTyID: return true;
-      case Type::ArrayTyID:
-      case Type::VectorTyID: {
-        SequentialType *STy = cast<SequentialType>(Ty);
-        Types.push_back(STy->getElementType());
+      case Type::PointerTyID:
+        return true;
+      case Type::VectorTyID:
+        if (cast<VectorType>(Ty)->getElementType()->isPointerTy())
+          return true;
         break;
-      }
+      case Type::ArrayTyID:
+        Types.push_back(cast<ArrayType>(Ty)->getElementType());
+        break;
       case Type::StructTyID: {
         StructType *STy = cast<StructType>(Ty);
         if (STy->isOpaque()) return true;
@@ -142,7 +144,8 @@ static bool isLeakCheckerRoot(GlobalVariable *GV) {
                  E = STy->element_end(); I != E; ++I) {
           Type *InnerTy = *I;
           if (isa<PointerType>(InnerTy)) return true;
-          if (isa<CompositeType>(InnerTy))
+          if (isa<StructType>(InnerTy) || isa<ArrayType>(InnerTy) ||
+              isa<VectorType>(InnerTy))
             Types.push_back(InnerTy);
         }
         break;
@@ -433,13 +436,27 @@ static bool GlobalUsersSafeToSRA(GlobalValue *GV) {
   return true;
 }
 
+static bool IsSRASequential(Type *T) {
+  return isa<ArrayType>(T) || isa<VectorType>(T);
+}
+static uint64_t GetSRASequentialNumElements(Type *T) {
+  if (ArrayType *AT = dyn_cast<ArrayType>(T))
+    return AT->getNumElements();
+  return cast<VectorType>(T)->getNumElements();
+}
+static Type *GetSRASequentialElementType(Type *T) {
+  if (ArrayType *AT = dyn_cast<ArrayType>(T))
+    return AT->getElementType();
+  return cast<VectorType>(T)->getElementType();
+}
 static bool CanDoGlobalSRA(GlobalVariable *GV) {
   Constant *Init = GV->getInitializer();
 
   if (isa<StructType>(Init->getType())) {
     // nothing to check
-  } else if (SequentialType *STy = dyn_cast<SequentialType>(Init->getType())) {
-    if (STy->getNumElements() > 16 && GV->hasNUsesOrMore(16))
+  } else if (IsSRASequential(Init->getType())) {
+    if (GetSRASequentialNumElements(Init->getType()) > 16 &&
+        GV->hasNUsesOrMore(16))
       return false; // It's not worth it.
   } else
     return false;
@@ -509,8 +526,8 @@ static GlobalVariable *SRAGlobal(GlobalVariable *GV, const DataLayout &DL) {
     Type *ElTy = nullptr;
     if (StructType *STy = dyn_cast<StructType>(Ty))
       ElTy = STy->getElementType(ElementIdx);
-    else if (SequentialType *STy = dyn_cast<SequentialType>(Ty))
-      ElTy = STy->getElementType();
+    else
+      ElTy = GetSRASequentialElementType(Ty);
     assert(ElTy);
 
     Constant *In = Init->getAggregateElement(ElementIdx);
@@ -541,7 +558,7 @@ static GlobalVariable *SRAGlobal(GlobalVariable *GV, const DataLayout &DL) {
       uint64_t FragmentOffsetInBits = Layout.getElementOffsetInBits(ElementIdx);
       transferSRADebugInfo(GV, NGV, FragmentOffsetInBits, Size,
                            STy->getNumElements());
-    } else if (SequentialType *STy = dyn_cast<SequentialType>(Ty)) {
+    } else {
       uint64_t EltSize = DL.getTypeAllocSize(ElTy);
       Align EltAlign(DL.getABITypeAlignment(ElTy));
       uint64_t FragmentSizeInBits = DL.getTypeAllocSizeInBits(ElTy);
@@ -553,7 +570,7 @@ static GlobalVariable *SRAGlobal(GlobalVariable *GV, const DataLayout &DL) {
       if (NewAlign > EltAlign)
         NGV->setAlignment(NewAlign);
       transferSRADebugInfo(GV, NGV, FragmentSizeInBits * ElementIdx,
-                           FragmentSizeInBits, STy->getNumElements());
+                           FragmentSizeInBits, GetSRASequentialNumElements(Ty));
     }
   }
 
@@ -659,9 +676,6 @@ static bool AllUsesOfValueWillTrapIfNull(const Value *V,
       // checked.
       if (PHIs.insert(PN).second && !AllUsesOfValueWillTrapIfNull(PN, PHIs))
         return false;
-    } else if (isa<ICmpInst>(U) &&
-               isa<ConstantPointerNull>(U->getOperand(1))) {
-      // Ignore icmp X, null
     } else {
       //cerr << "NONTRAPPING USE: " << *U;
       return false;
@@ -905,7 +919,7 @@ OptimizeGlobalAddressOfMalloc(GlobalVariable *GV, CallInst *CI, Type *AllocTy,
     if (StoreInst *SI = dyn_cast<StoreInst>(GV->user_back())) {
       // The global is initialized when the store to it occurs.
       new StoreInst(ConstantInt::getTrue(GV->getContext()), InitBool, false,
-                    None, SI->getOrdering(), SI->getSyncScopeID(), SI);
+                    Align(1), SI->getOrdering(), SI->getSyncScopeID(), SI);
       SI->eraseFromParent();
       continue;
     }
@@ -922,7 +936,7 @@ OptimizeGlobalAddressOfMalloc(GlobalVariable *GV, CallInst *CI, Type *AllocTy,
       // Replace the cmp X, 0 with a use of the bool value.
       // Sink the load to where the compare was, if atomic rules allow us to.
       Value *LV = new LoadInst(InitBool->getValueType(), InitBool,
-                               InitBool->getName() + ".val", false, None,
+                               InitBool->getName() + ".val", false, Align(1),
                                LI->getOrdering(), LI->getSyncScopeID(),
                                LI->isUnordered() ? (Instruction *)ICI : LI);
       InitBoolUsed = true;
@@ -1729,7 +1743,7 @@ static bool TryToShrinkGlobalToBoolean(GlobalVariable *GV, Constant *OtherVal) {
           assert(LI->getOperand(0) == GV && "Not a copy!");
           // Insert a new load, to preserve the saved value.
           StoreVal = new LoadInst(NewGV->getValueType(), NewGV,
-                                  LI->getName() + ".b", false, None,
+                                  LI->getName() + ".b", false, Align(1),
                                   LI->getOrdering(), LI->getSyncScopeID(), LI);
         } else {
           assert((isa<CastInst>(StoredVal) || isa<SelectInst>(StoredVal)) &&
@@ -1739,14 +1753,14 @@ static bool TryToShrinkGlobalToBoolean(GlobalVariable *GV, Constant *OtherVal) {
         }
       }
       StoreInst *NSI =
-          new StoreInst(StoreVal, NewGV, false, None, SI->getOrdering(),
+          new StoreInst(StoreVal, NewGV, false, Align(1), SI->getOrdering(),
                         SI->getSyncScopeID(), SI);
       NSI->setDebugLoc(SI->getDebugLoc());
     } else {
       // Change the load into a load of bool then a select.
       LoadInst *LI = cast<LoadInst>(UI);
       LoadInst *NLI = new LoadInst(NewGV->getValueType(), NewGV,
-                                   LI->getName() + ".b", false, None,
+                                   LI->getName() + ".b", false, Align(1),
                                    LI->getOrdering(), LI->getSyncScopeID(), LI);
       Instruction *NSI;
       if (IsOneZero)
@@ -2385,7 +2399,7 @@ OptimizeGlobalVars(Module &M,
         // for that optional parameter, since we don't have a Function to
         // provide GetTLI anyway.
         Constant *New = ConstantFoldConstant(C, DL, /*TLI*/ nullptr);
-        if (New && New != C)
+        if (New != C)
           GV->setInitializer(New);
       }
 
@@ -2427,8 +2441,11 @@ static Constant *EvaluateStoreInto(Constant *Init, Constant *Val,
   }
 
   ConstantInt *CI = cast<ConstantInt>(Addr->getOperand(OpNo));
-  SequentialType *InitTy = cast<SequentialType>(Init->getType());
-  uint64_t NumElts = InitTy->getNumElements();
+  uint64_t NumElts;
+  if (ArrayType *ATy = dyn_cast<ArrayType>(Init->getType()))
+    NumElts = ATy->getNumElements();
+  else
+    NumElts = cast<VectorType>(Init->getType())->getNumElements();
 
   // Break up the array into elements.
   for (uint64_t i = 0, e = NumElts; i != e; ++i)
@@ -2439,7 +2456,7 @@ static Constant *EvaluateStoreInto(Constant *Init, Constant *Val,
     EvaluateStoreInto(Elts[CI->getZExtValue()], Val, Addr, OpNo+1);
 
   if (Init->getType()->isArrayTy())
-    return ConstantArray::get(cast<ArrayType>(InitTy), Elts);
+    return ConstantArray::get(cast<ArrayType>(Init->getType()), Elts);
   return ConstantVector::get(Elts);
 }
 
@@ -2561,8 +2578,10 @@ static void BatchCommitValueTo(const DenseMap<Constant*, Constant*> &Mem) {
       unsigned NumElts;
       if (auto *STy = dyn_cast<StructType>(Ty))
         NumElts = STy->getNumElements();
+      else if (auto *ATy = dyn_cast<ArrayType>(Ty))
+        NumElts = ATy->getNumElements();
       else
-        NumElts = cast<SequentialType>(Ty)->getNumElements();
+        NumElts = cast<VectorType>(Ty)->getNumElements();
       for (unsigned i = 0, e = NumElts; i != e; ++i)
         Elts.push_back(Init->getAggregateElement(i));
     }

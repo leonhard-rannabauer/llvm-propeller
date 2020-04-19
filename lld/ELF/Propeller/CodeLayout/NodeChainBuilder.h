@@ -104,17 +104,15 @@ private:
 
   void init();
 
-  // Initialize the mutuallyForcedOut map
-  void initMutuallyForcedEdges(ControlFlowGraph &cfg,
-                               std::vector<std::vector<CFGNode *>> &paths);
+  // Initialize the bundles
+  void initBundles(ControlFlowGraph &cfg,
+                   std::vector<std::vector<CFGNode *>> &bundles);
 
-  // Initialize basic block chains, with one chain for every node
+  // Initialize basic block chains and bundles with one chain for every bundle,
+  // every vector in paths would constitute a bundle which is gauaranteed to
+  // remain fixed (not splitted) during the chain building.
   void initNodeChains(ControlFlowGraph &cfg,
-                      std::vector<std::vector<CFGNode *>> &paths);
-
-  void bundleNodes(NodeChain *chain,
-                   std::list<std::unique_ptr<CFGNodeBundle>>::iterator begin,
-                   std::list<std::unique_ptr<CFGNodeBundle>>::iterator end);
+                      std::vector<std::vector<CFGNode *>> &bundles);
 
 public:
   // This invokes the Extended TSP algorithm, orders the hot and cold basic

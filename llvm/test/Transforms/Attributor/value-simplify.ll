@@ -208,17 +208,18 @@ define i32* @complicated_args_inalloca() {
 
 define internal void @test_sret(%struct.X* sret %a, %struct.X** %b) {
 ; CHECK-LABEL: define {{[^@]+}}@test_sret
-; CHECK-SAME: (%struct.X* noalias nofree sret writeonly align 536870912 [[A:%.*]], %struct.X** nocapture nofree nonnull writeonly dereferenceable(8) [[B:%.*]])
-; CHECK-NEXT:    store %struct.X* [[A]], %struct.X** [[B]]
+; CHECK-SAME: (%struct.X* noalias nofree sret writeonly align 536870912 [[A:%.*]], %struct.X** nocapture nofree nonnull writeonly align 8 dereferenceable(8) [[B:%.*]])
+; CHECK-NEXT:    store %struct.X* [[A]], %struct.X** [[B]], align 8
 ; CHECK-NEXT:    ret void
 ;
   store %struct.X* %a, %struct.X** %b
   ret void
 }
+; FIXME: Alignment and dereferenceability are not propagated to the argument
 define void @complicated_args_sret(%struct.X** %b) {
 ; CHECK-LABEL: define {{[^@]+}}@complicated_args_sret
 ; CHECK-SAME: (%struct.X** nocapture nofree writeonly [[B:%.*]])
-; CHECK-NEXT:    call void @test_sret(%struct.X* noalias nofree writeonly align 536870912 null, %struct.X** nocapture nofree writeonly [[B]])
+; CHECK-NEXT:    call void @test_sret(%struct.X* noalias nofree writeonly align 536870912 null, %struct.X** nocapture nofree writeonly align 8 [[B]])
 ; CHECK-NEXT:    ret void
 ;
   call void @test_sret(%struct.X* null, %struct.X** %b)
@@ -256,8 +257,7 @@ define void @complicated_args_byval() {
 }
 
 define internal i8*@test_byval2(%struct.X* byval %a) {
-; CHECK-LABEL: define {{[^@]+}}@test_byval2
-; CHECK-SAME: (%struct.X* noalias nocapture nofree nonnull readonly byval align 8 dereferenceable(8) [[A:%.*]])
+; CHECK-LABEL: define {{[^@]+}}@test_byval2()
 ; CHECK-NEXT:    [[G0:%.*]] = getelementptr [[STRUCT_X:%.*]], %struct.X* @S, i32 0, i32 0
 ; CHECK-NEXT:    [[L:%.*]] = load i8*, i8** [[G0]], align 8
 ; CHECK-NEXT:    ret i8* [[L]]
@@ -268,7 +268,7 @@ define internal i8*@test_byval2(%struct.X* byval %a) {
 }
 define i8* @complicated_args_byval2() {
 ; CHECK-LABEL: define {{[^@]+}}@complicated_args_byval2()
-; CHECK-NEXT:    [[C:%.*]] = call i8* @test_byval2(%struct.X* nofree nonnull readonly align 8 dereferenceable(8) @S)
+; CHECK-NEXT:    [[C:%.*]] = call i8* @test_byval2()
 ; CHECK-NEXT:    ret i8* [[C]]
 ;
   %c = call i8* @test_byval2(%struct.X* @S)

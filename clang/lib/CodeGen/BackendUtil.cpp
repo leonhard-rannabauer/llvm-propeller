@@ -18,6 +18,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
+#include "llvm/Analysis/StackSafetyAnalysis.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Bitcode/BitcodeReader.h"
@@ -38,7 +39,6 @@
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Passes/PassPlugin.h"
 #include "llvm/Passes/StandardInstrumentations.h"
-#include "llvm/ProfileData/BBSectionsProf.h"
 #include "llvm/Support/BuryPointer.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -50,6 +50,10 @@
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/Coroutines.h"
+#include "llvm/Transforms/Coroutines/CoroCleanup.h"
+#include "llvm/Transforms/Coroutines/CoroEarly.h"
+#include "llvm/Transforms/Coroutines/CoroElide.h"
+#include "llvm/Transforms/Coroutines/CoroSplit.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/IPO/AlwaysInliner.h"
 #include "llvm/Transforms/IPO/LowerTypeTests.h"
@@ -73,6 +77,7 @@
 #include "llvm/Transforms/Utils/EntryExitInstrumenter.h"
 #include "llvm/Transforms/Utils/NameAnonGlobals.h"
 #include "llvm/Transforms/Utils/SymbolRewriter.h"
+#include "llvm/Transforms/Utils/UniqueInternalLinkageNames.h"
 #include <memory>
 using namespace clang;
 using namespace llvm;
@@ -218,6 +223,7 @@ getSancovOptsFromCGOpts(const CodeGenOptions &CGOpts) {
   Opts.TracePCGuard = CGOpts.SanitizeCoverageTracePCGuard;
   Opts.NoPrune = CGOpts.SanitizeCoverageNoPrune;
   Opts.Inline8bitCounters = CGOpts.SanitizeCoverageInline8bitCounters;
+  Opts.InlineBoolFlag = CGOpts.SanitizeCoverageInlineBoolFlag;
   Opts.PCTable = CGOpts.SanitizeCoveragePCTable;
   Opts.StackDepth = CGOpts.SanitizeCoverageStackDepth;
   return Opts;
@@ -229,7 +235,9 @@ static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
       static_cast<const PassManagerBuilderWrapper &>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
   auto Opts = getSancovOptsFromCGOpts(CGOpts);
-  PM.add(createModuleSanitizerCoverageLegacyPassPass(Opts));
+  PM.add(createModuleSanitizerCoverageLegacyPassPass(
+      Opts, CGOpts.SanitizeCoverageWhitelistFiles,
+      CGOpts.SanitizeCoverageBlacklistFiles));
 }
 
 // Check if ASan should use GC-friendly instrumentation for globals.
@@ -342,6 +350,11 @@ static void addDataFlowSanitizerPass(const PassManagerBuilder &Builder,
   PM.add(createDataFlowSanitizerPass(LangOpts.SanitizerBlacklistFiles));
 }
 
+static void addMemTagOptimizationPasses(const PassManagerBuilder &Builder,
+                                        legacy::PassManagerBase &PM) {
+  PM.add(createStackSafetyGlobalInfoWrapperPass(/*SetMetadata=*/true));
+}
+
 static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
                                          const CodeGenOptions &CodeGenOpts) {
   TargetLibraryInfoImpl *TLII = new TargetLibraryInfoImpl(TargetTriple);
@@ -352,7 +365,7 @@ static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
     break;
   case CodeGenOptions::MASSV:
     TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::MASSV);
-    break;    
+    break;
   case CodeGenOptions::SVML:
     TLII->addVectorizableFunctionsFromVecLib(TargetLibraryInfoImpl::SVML);
     break;
@@ -474,16 +487,22 @@ static void initTargetOptions(llvm::TargetOptions &Options,
   Options.UnsafeFPMath = CodeGenOpts.UnsafeFPMath;
   Options.StackAlignmentOverride = CodeGenOpts.StackAlignment;
 
-  Options.BBSections = llvm::StringSwitch<llvm::BasicBlockSection::SectionMode>(
-                           CodeGenOpts.BBSections)
-                           .Case("all", llvm::BasicBlockSection::All)
-                           .Case("labels", llvm::BasicBlockSection::Labels)
-                           .Case("none", llvm::BasicBlockSection::None)
-                           .Default(llvm::BasicBlockSection::List);
+  Options.BBSections =
+      llvm::StringSwitch<llvm::BasicBlockSection>(CodeGenOpts.BBSections)
+          .Case("all", llvm::BasicBlockSection::All)
+          .Case("labels", llvm::BasicBlockSection::Labels)
+          .Case("none", llvm::BasicBlockSection::None)
+          .Default(llvm::BasicBlockSection::List);
 
-  if (Options.BBSections == llvm::BasicBlockSection::List)
-    llvm::bbsections::getBBSectionsList(CodeGenOpts.BBSections,
-                                        Options.BBSectionsList);
+  if (Options.BBSections == llvm::BasicBlockSection::List) {
+    ErrorOr<std::unique_ptr<MemoryBuffer>> MBOrErr =
+        MemoryBuffer::getFile(CodeGenOpts.BBSections);
+    if (!MBOrErr)
+      errs() << "Error loading basic block sections function list file: "
+             << MBOrErr.getError().message() << "\n";
+    else
+      Options.BBSectionsFuncListBuf = std::move(*MBOrErr);
+  }
 
   Options.FunctionSections = CodeGenOpts.FunctionSections;
   Options.DataSections = CodeGenOpts.DataSections;
@@ -495,8 +514,8 @@ static void initTargetOptions(llvm::TargetOptions &Options,
   Options.DebuggerTuning = CodeGenOpts.getDebuggerTuning();
   Options.EmitStackSizeSection = CodeGenOpts.StackSizeSection;
   Options.EmitAddrsig = CodeGenOpts.Addrsig;
-  Options.EnableDebugEntryValues = CodeGenOpts.EnableDebugEntryValues;
   Options.ForceDwarfFrameSection = CodeGenOpts.ForceDwarfFrameSection;
+  Options.EmitCallSiteInfo = CodeGenOpts.EmitCallSiteInfo;
 
   Options.MCOptions.SplitDwarfFile = CodeGenOpts.SplitDwarfFile;
   Options.MCOptions.MCRelaxAll = CodeGenOpts.RelaxAll;
@@ -583,8 +602,9 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   // At O0 and O1 we only run the always inliner which is more efficient. At
   // higher optimization levels we run the normal inliner.
   if (CodeGenOpts.OptimizationLevel <= 1) {
-    bool InsertLifetimeIntrinsics = (CodeGenOpts.OptimizationLevel != 0 &&
-                                     !CodeGenOpts.DisableLifetimeMarkers);
+    bool InsertLifetimeIntrinsics = ((CodeGenOpts.OptimizationLevel != 0 &&
+                                      !CodeGenOpts.DisableLifetimeMarkers) ||
+                                     LangOpts.Coroutines);
     PMBuilder.Inliner = createAlwaysInlinerLegacyPass(InsertLifetimeIntrinsics);
   } else {
     // We do not want to inline hot callsites for SamplePGO module-summary build
@@ -705,6 +725,11 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
                            addDataFlowSanitizerPass);
   }
 
+  if (LangOpts.Sanitize.has(SanitizerKind::MemTag)) {
+    PMBuilder.addExtension(PassManagerBuilder::EP_OptimizerLast,
+                           addMemTagOptimizationPasses);
+  }
+
   // Set up the per-function pass manager.
   FPM.add(new TargetLibraryInfoWrapperPass(*TLII));
   if (CodeGenOpts.VerifyModule)
@@ -713,6 +738,12 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   // Set up the per-module pass manager.
   if (!CodeGenOpts.RewriteMapFiles.empty())
     addSymbolRewriterPass(CodeGenOpts, &MPM);
+
+  // Add UniqueInternalLinkageNames Pass which renames internal linkage symbols
+  // with unique names.
+  if (CodeGenOpts.UniqueInternalLinkageNames) {
+    MPM.add(createUniqueInternalLinkageNamesPass());
+  }
 
   if (Optional<GCOVOptions> Options = getGCOVOptions(CodeGenOpts)) {
     MPM.add(createGCOVProfilerPass(*Options));
@@ -971,6 +1002,22 @@ static PassBuilder::OptimizationLevel mapToLevel(const CodeGenOptions &Opts) {
   }
 }
 
+static void addCoroutinePassesAtO0(ModulePassManager &MPM,
+                                   const LangOptions &LangOpts,
+                                   const CodeGenOptions &CodeGenOpts) {
+  if (!LangOpts.Coroutines)
+    return;
+
+  MPM.addPass(createModuleToFunctionPassAdaptor(CoroEarlyPass()));
+
+  CGSCCPassManager CGPM(CodeGenOpts.DebugPassManager);
+  CGPM.addPass(CoroSplitPass());
+  CGPM.addPass(createCGSCCToFunctionPassAdaptor(CoroElidePass()));
+  MPM.addPass(createModuleToPostOrderCGSCCPassAdaptor(std::move(CGPM)));
+
+  MPM.addPass(createModuleToFunctionPassAdaptor(CoroCleanupPass()));
+}
+
 static void addSanitizersAtO0(ModulePassManager &MPM,
                               const Triple &TargetTriple,
                               const LangOptions &LangOpts,
@@ -1090,6 +1137,8 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
   PTO.LoopInterleaving = CodeGenOpts.UnrollLoops;
   PTO.LoopVectorization = CodeGenOpts.VectorizeLoop;
   PTO.SLPVectorization = CodeGenOpts.VectorizeSLP;
+  PTO.CallGraphProfile = CodeGenOpts.CallGraphProfile;
+  PTO.Coroutines = LangOpts.Coroutines;
 
   PassInstrumentationCallbacks PIC;
   StandardInstrumentations SI;
@@ -1158,7 +1207,10 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
       // which is just that always inlining occurs. Further, disable generating
       // lifetime intrinsics to avoid enabling further optimizations during
       // code generation.
-      MPM.addPass(AlwaysInlinerPass(/*InsertLifetimeIntrinsics=*/false));
+      // However, we need to insert lifetime intrinsics to avoid invalid access
+      // caused by multithreaded coroutines.
+      MPM.addPass(
+          AlwaysInlinerPass(/*InsertLifetimeIntrinsics=*/LangOpts.Coroutines));
 
       // At -O0, we can still do PGO. Add all the requested passes for
       // instrumentation PGO, if requested.
@@ -1173,6 +1225,12 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
       // At -O0 we directly run necessary sanitizer passes.
       if (LangOpts.Sanitize.has(SanitizerKind::LocalBounds))
         MPM.addPass(createModuleToFunctionPassAdaptor(BoundsCheckingPass()));
+
+      // Add UniqueInternalLinkageNames Pass which renames internal linkage
+      // symbols with unique names.
+      if (CodeGenOpts.UniqueInternalLinkageNames) {
+        MPM.addPass(UniqueInternalLinkageNamesPass());
+      }
 
       // Lastly, add semantically necessary passes for LTO.
       if (IsLTO || IsThinLTO) {
@@ -1259,6 +1317,12 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
           MPM.addPass(InstrProfiling(*Options, false));
         });
 
+      // Add UniqueInternalLinkageNames Pass which renames internal linkage
+      // symbols with unique names.
+      if (CodeGenOpts.UniqueInternalLinkageNames) {
+        MPM.addPass(UniqueInternalLinkageNamesPass());
+      }
+
       if (IsThinLTO) {
         MPM = PB.buildThinLTOPreLinkDefaultPipeline(
             Level, CodeGenOpts.DebugPassManager);
@@ -1292,7 +1356,13 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
           /*CompileKernel=*/true, /*Recover=*/true));
     }
 
+    if (CodeGenOpts.OptimizationLevel > 0 &&
+        LangOpts.Sanitize.has(SanitizerKind::MemTag)) {
+      MPM.addPass(StackSafetyGlobalAnnotatorPass());
+    }
+
     if (CodeGenOpts.OptimizationLevel == 0) {
+      addCoroutinePassesAtO0(MPM, LangOpts, CodeGenOpts);
       addSanitizersAtO0(MPM, TargetTriple, LangOpts, CodeGenOpts);
     }
   }
@@ -1490,6 +1560,7 @@ static void runThinLTOBackend(ModuleSummaryIndex *CombinedIndex, Module *M,
   Conf.PTO.LoopInterleaving = CGOpts.UnrollLoops;
   Conf.PTO.LoopVectorization = CGOpts.VectorizeLoop;
   Conf.PTO.SLPVectorization = CGOpts.VectorizeSLP;
+  Conf.PTO.CallGraphProfile = CGOpts.CallGraphProfile;
 
   // Context sensitive profile.
   if (CGOpts.hasProfileCSIRInstr()) {

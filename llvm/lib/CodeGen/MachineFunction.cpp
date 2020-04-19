@@ -130,11 +130,10 @@ static inline unsigned getFnStackAlignment(const TargetSubtargetInfo *STI,
                                            const Function &F) {
   if (F.hasFnAttribute(Attribute::StackAlignment))
     return F.getFnStackAlignment();
-  return STI->getFrameLowering()->getStackAlignment();
+  return STI->getFrameLowering()->getStackAlign().value();
 }
 
-MachineFunction::MachineFunction(const Function &F,
-                                 const LLVMTargetMachine &Target,
+MachineFunction::MachineFunction(Function &F, const LLVMTargetMachine &Target,
                                  const TargetSubtargetInfo &STI,
                                  unsigned FunctionNum, MachineModuleInfo &mmi)
     : F(F), Target(Target), STI(&STI), Ctx(mmi.getContext()), MMI(mmi) {
@@ -172,7 +171,7 @@ void MachineFunction::init() {
           F.hasFnAttribute(Attribute::StackAlignment));
 
   if (F.hasFnAttribute(Attribute::StackAlignment))
-    FrameInfo->ensureMaxAlignment(F.getFnStackAlignment());
+    FrameInfo->ensureMaxAlignment(*F.getFnStackAlign());
 
   ConstantPool = new (Allocator) MachineConstantPool(getDataLayout());
   Alignment = STI->getTargetLowering()->getMinFunctionAlignment();
@@ -182,18 +181,6 @@ void MachineFunction::init() {
   if (!F.hasFnAttribute(Attribute::OptimizeForSize))
     Alignment = std::max(Alignment,
                          STI->getTargetLowering()->getPrefFunctionAlignment());
-
-  // Check if basic block sections are required for this function.
-  if (Target.getBBSections() == llvm::BasicBlockSection::All ||
-      F.getBBSections() ||
-      (Target.getBBSections() == llvm::BasicBlockSection::List &&
-       Target.isFunctionInBBSectionsList(F.getName())))
-    BBSections = true;
-
-  // Check if basic block labels are required for this function.
-  if (Target.getBBSections() == llvm::BasicBlockSection::Labels ||
-      F.getBasicBlockLabels())
-    BasicBlockLabels = true;
 
   if (AlignAllFunctions)
     Alignment = Align(1ULL << AlignAllFunctions);
@@ -298,15 +285,7 @@ DenormalMode MachineFunction::getDenormalMode(const fltSemantics &FPType) const 
   // TODO: Should probably avoid the connection to the IR and store directly
   // in the MachineFunction.
   Attribute Attr = F.getFnAttribute("denormal-fp-math");
-
-  // FIXME: This should assume IEEE behavior on an unspecified
-  // attribute. However, the one current user incorrectly assumes a non-IEEE
-  // target by default.
-  StringRef Val = Attr.getValueAsString();
-  if (Val.empty())
-    return DenormalMode::getInvalid();
-
-  return parseDenormalFPAttribute(Val);
+  return parseDenormalFPAttribute(Attr.getValueAsString());
 }
 
 /// Should we be emitting segmented stack stuff for the function
@@ -364,32 +343,45 @@ void MachineFunction::RenumberBlocks(MachineBasicBlock *MBB) {
 /// This is used with -fbasicblock-sections or -fbasicblock-labels option.
 /// A unary encoding of basic block labels is done to keep ".strtab" sizes
 /// small.
-void MachineFunction::setBasicBlockLabels() {
+void MachineFunction::createBBLabels() {
   const TargetInstrInfo *TII = getSubtarget().getInstrInfo();
-  this->MBBSymbolPrefix.resize(getNumBlockIDs(), 'a');
+  this->BBSectionsSymbolPrefix.resize(getNumBlockIDs(), 'a');
   for (auto MBBI = begin(), E = end(); MBBI != E; ++MBBI) {
-    if (MBBI->getNumber() < 0 || MBBI->getNumber() >= (int)getNumBlockIDs())
-      report_fatal_error(
-          "BasicBlock number was out of range: " + Twine(MBBI->getNumber()) +
-          " [0 -> " + Twine(getNumBlockIDs()) + "]");
-    // 'a' - Normal block.
-    // 'r' - Return block.
-    // 'l' - Landing Pad.
-    // 'L' - Return and landing pad.
-    bool isEHPad = MBBI->isEHPad();
-    bool isRetBlock = MBBI->isReturnBlock() && !TII->isTailCall(MBBI->back());
-    bool isTailCall = TII->isTailCall(MBBI->back());
+    assert(
+        (MBBI->getNumber() >= 0 && MBBI->getNumber() < (int)getNumBlockIDs()) &&
+        "BasicBlock number was out of range!");
+    // 'f' or 'F' - Fallthrough block (A block which can fallthrough to its
+    // next). 'r' or 'R' - Return block. 'a' or 'A' - All other blocks.
     char type = 'a';
-    if (isEHPad && isRetBlock)
-      type = 'L';
-    else if (isEHPad)
-      type = 'l';
-    else if (isRetBlock)
-      type = 'r';
-    else if (isTailCall)
-      type = 't';
-    MBBSymbolPrefix[MBBI->getNumber()] = type;
+    if (MBBI->isReturnBlock()) {
+      if(TII->isTailCall(MBBI->back()))
+        type = 't';
+      else
+        type = 'r';
+    } else if (MBBI->canFallThrough())
+      type = 'a'; // CHANGE THIS to 'f' later to fix b/154263650
+    this->BBSectionsSymbolPrefix[MBBI->getNumber()] = type;
+    // We use the uppercase letter to indicate EH block.
+    if (MBBI->isEHPad())
+      type = toUpper(type);
+    BBSectionsSymbolPrefix[MBBI->getNumber()] = type;
   }
+}
+
+/// This method iterates over the basic blocks and assigns their IsBeginSection
+/// and IsEndSection fields. This must be called after MBB layout is finalized
+/// and the SectionID's are assigned to MBBs.
+void MachineFunction::assignBeginEndSections() {
+  front().setIsBeginSection();
+  auto CurrentSectionID = front().getSectionID();
+  for (auto MBBI = std::next(begin()), E = end(); MBBI != E; ++MBBI) {
+    if (MBBI->getSectionID() == CurrentSectionID)
+      continue;
+    MBBI->setIsBeginSection();
+    std::prev(MBBI)->setIsEndSection();
+    CurrentSectionID = MBBI->getSectionID();
+  }
+  back().setIsEndSection();
 }
 
 /// Allocate a new MachineInstr. Use this instead of `new MachineInstr'.
@@ -425,6 +417,11 @@ MachineInstr &MachineFunction::CloneMachineInstrBundle(MachineBasicBlock &MBB,
       break;
     ++I;
   }
+  // Copy over call site info to the cloned instruction if needed. If Orig is in
+  // a bundle, copyCallSiteInfo takes care of finding the call instruction in
+  // the bundle.
+  if (Orig.shouldUpdateCallSiteInfo())
+    copyCallSiteInfo(&Orig, FirstClone);
   return *FirstClone;
 }
 
@@ -438,7 +435,7 @@ MachineFunction::DeleteMachineInstr(MachineInstr *MI) {
   // be triggered during the implementation of support for the
   // call site info of a new architecture. If the assertion is triggered,
   // back trace will tell where to insert a call to updateCallSiteInfo().
-  assert((!MI->isCall(MachineInstr::IgnoreBundle) ||
+  assert((!MI->isCandidateForCallSiteEntry() ||
           CallSitesInfo.find(MI) == CallSitesInfo.end()) &&
          "Call site info was not updated!");
   // Strip it for parts. The operand array and the MI object itself are
@@ -469,7 +466,7 @@ MachineFunction::DeleteMachineBasicBlock(MachineBasicBlock *MBB) {
 
 MachineMemOperand *MachineFunction::getMachineMemOperand(
     MachinePointerInfo PtrInfo, MachineMemOperand::Flags f, uint64_t s,
-    unsigned base_alignment, const AAMDNodes &AAInfo, const MDNode *Ranges,
+    Align base_alignment, const AAMDNodes &AAInfo, const MDNode *Ranges,
     SyncScope::ID SSID, AtomicOrdering Ordering,
     AtomicOrdering FailureOrdering) {
   return new (Allocator)
@@ -484,13 +481,13 @@ MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
 
   // If there is no pointer value, the offset isn't tracked so we need to adjust
   // the base alignment.
-  unsigned Align = PtrInfo.V.isNull()
-                       ? MinAlign(MMO->getBaseAlignment(), Offset)
-                       : MMO->getBaseAlignment();
+  Align Alignment = PtrInfo.V.isNull()
+                        ? commonAlignment(MMO->getBaseAlign(), Offset)
+                        : MMO->getBaseAlign();
 
   return new (Allocator)
       MachineMemOperand(PtrInfo.getWithOffset(Offset), MMO->getFlags(), Size,
-                        Align, AAMDNodes(), nullptr, MMO->getSyncScopeID(),
+                        Alignment, AAMDNodes(), nullptr, MMO->getSyncScopeID(),
                         MMO->getOrdering(), MMO->getFailureOrdering());
 }
 
@@ -501,18 +498,17 @@ MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
              MachinePointerInfo(MMO->getValue(), MMO->getOffset()) :
              MachinePointerInfo(MMO->getPseudoValue(), MMO->getOffset());
 
-  return new (Allocator)
-             MachineMemOperand(MPI, MMO->getFlags(), MMO->getSize(),
-                               MMO->getBaseAlignment(), AAInfo,
-                               MMO->getRanges(), MMO->getSyncScopeID(),
-                               MMO->getOrdering(), MMO->getFailureOrdering());
+  return new (Allocator) MachineMemOperand(
+      MPI, MMO->getFlags(), MMO->getSize(), MMO->getBaseAlign(), AAInfo,
+      MMO->getRanges(), MMO->getSyncScopeID(), MMO->getOrdering(),
+      MMO->getFailureOrdering());
 }
 
 MachineMemOperand *
 MachineFunction::getMachineMemOperand(const MachineMemOperand *MMO,
                                       MachineMemOperand::Flags Flags) {
   return new (Allocator) MachineMemOperand(
-      MMO->getPointerInfo(), Flags, MMO->getSize(), MMO->getBaseAlignment(),
+      MMO->getPointerInfo(), Flags, MMO->getSize(), MMO->getBaseAlign(),
       MMO->getAAInfo(), MMO->getRanges(), MMO->getSyncScopeID(),
       MMO->getOrdering(), MMO->getFailureOrdering());
 }
@@ -911,32 +907,31 @@ MachineFunction::getCallSiteInfo(const MachineInstr *MI) {
   assert(MI->isCandidateForCallSiteEntry() &&
          "Call site info refers only to call (MI) candidates");
 
-  if (!Target.Options.EnableDebugEntryValues)
+  if (!Target.Options.EmitCallSiteInfo)
     return CallSitesInfo.end();
   return CallSitesInfo.find(MI);
 }
 
-void MachineFunction::moveCallSiteInfo(const MachineInstr *Old,
-                                       const MachineInstr *New) {
-  assert(Old->isCandidateForCallSiteEntry() &&
-         "Call site info refers only to call (MI) candidates");
+/// Return the call machine instruction or find a call within bundle.
+static const MachineInstr *getCallInstr(const MachineInstr *MI) {
+  if (!MI->isBundle())
+    return MI;
 
-  if (!New->isCandidateForCallSiteEntry())
-    return eraseCallSiteInfo(Old);
+  for (auto &BMI : make_range(getBundleStart(MI->getIterator()),
+                              getBundleEnd(MI->getIterator())))
+    if (BMI.isCandidateForCallSiteEntry())
+      return &BMI;
 
-  CallSiteInfoMap::iterator CSIt = getCallSiteInfo(Old);
-  if (CSIt == CallSitesInfo.end())
-    return;
-
-  CallSiteInfo CSInfo = std::move(CSIt->second);
-  CallSitesInfo.erase(CSIt);
-  CallSitesInfo[New] = CSInfo;
+  llvm_unreachable("Unexpected bundle without a call site candidate");
 }
 
 void MachineFunction::eraseCallSiteInfo(const MachineInstr *MI) {
-  assert(MI->isCandidateForCallSiteEntry() &&
-         "Call site info refers only to call (MI) candidates");
-  CallSiteInfoMap::iterator CSIt = getCallSiteInfo(MI);
+  assert(MI->shouldUpdateCallSiteInfo() &&
+         "Call site info refers only to call (MI) candidates or "
+         "candidates inside bundles");
+
+  const MachineInstr *CallMI = getCallInstr(MI);
+  CallSiteInfoMap::iterator CSIt = getCallSiteInfo(CallMI);
   if (CSIt == CallSitesInfo.end())
     return;
   CallSitesInfo.erase(CSIt);
@@ -944,17 +939,38 @@ void MachineFunction::eraseCallSiteInfo(const MachineInstr *MI) {
 
 void MachineFunction::copyCallSiteInfo(const MachineInstr *Old,
                                        const MachineInstr *New) {
-  assert(Old->isCandidateForCallSiteEntry() &&
-         "Call site info refers only to call (MI) candidates");
+  assert(Old->shouldUpdateCallSiteInfo() &&
+         "Call site info refers only to call (MI) candidates or "
+         "candidates inside bundles");
 
   if (!New->isCandidateForCallSiteEntry())
     return eraseCallSiteInfo(Old);
 
-  CallSiteInfoMap::iterator CSIt = getCallSiteInfo(Old);
+  const MachineInstr *OldCallMI = getCallInstr(Old);
+  CallSiteInfoMap::iterator CSIt = getCallSiteInfo(OldCallMI);
   if (CSIt == CallSitesInfo.end())
     return;
 
   CallSiteInfo CSInfo = CSIt->second;
+  CallSitesInfo[New] = CSInfo;
+}
+
+void MachineFunction::moveCallSiteInfo(const MachineInstr *Old,
+                                       const MachineInstr *New) {
+  assert(Old->shouldUpdateCallSiteInfo() &&
+         "Call site info refers only to call (MI) candidates or "
+         "candidates inside bundles");
+
+  if (!New->isCandidateForCallSiteEntry())
+    return eraseCallSiteInfo(Old);
+
+  const MachineInstr *OldCallMI = getCallInstr(Old);
+  CallSiteInfoMap::iterator CSIt = getCallSiteInfo(OldCallMI);
+  if (CSIt == CallSitesInfo.end())
+    return;
+
+  CallSiteInfo CSInfo = std::move(CSIt->second);
+  CallSitesInfo.erase(CSIt);
   CallSitesInfo[New] = CSInfo;
 }
 

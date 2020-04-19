@@ -132,7 +132,7 @@ static cl::opt<std::string> Name("name", cl::desc("Name to find."),
                                  cl::sub(SymbolsSubcommand));
 static cl::opt<bool>
     Regex("regex",
-          cl::desc("Search using regular expressions (avaliable for variables "
+          cl::desc("Search using regular expressions (available for variables "
                    "and functions only)."),
           cl::sub(SymbolsSubcommand));
 static cl::opt<std::string>
@@ -395,7 +395,8 @@ opts::symbols::getDeclContext(SymbolFile &Symfile) {
   if (Context.empty())
     return CompilerDeclContext();
   VariableList List;
-  Symfile.FindGlobalVariables(ConstString(Context), nullptr, UINT32_MAX, List);
+  Symfile.FindGlobalVariables(ConstString(Context), CompilerDeclContext(),
+                              UINT32_MAX, List);
   if (List.Empty())
     return make_string_error("Context search didn't find a match.");
   if (List.GetSize() > 1)
@@ -442,8 +443,8 @@ Error opts::symbols::findFunctions(lldb_private::Module &Module) {
     Expected<CompilerDeclContext> ContextOr = getDeclContext(Symfile);
     if (!ContextOr)
       return ContextOr.takeError();
-    CompilerDeclContext *ContextPtr =
-        ContextOr->IsValid() ? &*ContextOr : nullptr;
+    const CompilerDeclContext &ContextPtr =
+        ContextOr->IsValid() ? *ContextOr : CompilerDeclContext();
 
     List.Clear();
     Symfile.FindFunctions(ConstString(Name), ContextPtr, getFunctionNameFlags(),
@@ -498,8 +499,8 @@ Error opts::symbols::findNamespaces(lldb_private::Module &Module) {
   Expected<CompilerDeclContext> ContextOr = getDeclContext(Symfile);
   if (!ContextOr)
     return ContextOr.takeError();
-  CompilerDeclContext *ContextPtr =
-      ContextOr->IsValid() ? &*ContextOr : nullptr;
+  const CompilerDeclContext &ContextPtr =
+      ContextOr->IsValid() ? *ContextOr : CompilerDeclContext();
 
   CompilerDeclContext Result =
       Symfile.FindNamespace(ConstString(Name), ContextPtr);
@@ -516,8 +517,8 @@ Error opts::symbols::findTypes(lldb_private::Module &Module) {
   Expected<CompilerDeclContext> ContextOr = getDeclContext(Symfile);
   if (!ContextOr)
     return ContextOr.takeError();
-  CompilerDeclContext *ContextPtr =
-      ContextOr->IsValid() ? &*ContextOr : nullptr;
+  const CompilerDeclContext &ContextPtr =
+      ContextOr->IsValid() ? *ContextOr : CompilerDeclContext();
 
   LanguageSet languages;
   if (!Language.empty())
@@ -566,8 +567,8 @@ Error opts::symbols::findVariables(lldb_private::Module &Module) {
     Expected<CompilerDeclContext> ContextOr = getDeclContext(Symfile);
     if (!ContextOr)
       return ContextOr.takeError();
-    CompilerDeclContext *ContextPtr =
-        ContextOr->IsValid() ? &*ContextOr : nullptr;
+    const CompilerDeclContext &ContextPtr =
+        ContextOr->IsValid() ? *ContextOr : CompilerDeclContext();
 
     Symfile.FindGlobalVariables(ConstString(Name), ContextPtr, UINT32_MAX, List);
   }
@@ -650,7 +651,7 @@ Error opts::symbols::verify(lldb_private::Module &Module) {
   for (uint32_t i = 0; i < comp_units_count; i++) {
     lldb::CompUnitSP comp_unit = symfile->GetCompileUnitAtIndex(i);
     if (!comp_unit)
-      return make_string_error("Connot parse compile unit {0}.", i);
+      return make_string_error("Cannot parse compile unit {0}.", i);
 
     outs() << "Processing '"
            << comp_unit->GetPrimaryFile().GetFilename().AsCString()
@@ -845,7 +846,7 @@ static void dumpSectionList(LinePrinter &Printer, const SectionList &List, bool 
     if (opts::object::SectionContents) {
       lldb_private::DataExtractor Data;
       S->GetSectionData(Data);
-      ArrayRef<uint8_t> Bytes = {Data.GetDataStart(), Data.GetDataEnd()};
+      ArrayRef<uint8_t> Bytes(Data.GetDataStart(), Data.GetDataEnd());
       Printer.formatBinary("Data: ", Bytes, 0);
     }
 

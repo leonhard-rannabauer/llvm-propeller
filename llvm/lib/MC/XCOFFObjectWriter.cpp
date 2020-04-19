@@ -313,6 +313,12 @@ CsectGroup &XCOFFObjectWriter::getCsectGroup(const MCSectionXCOFF *MCSec) {
   }
 }
 
+static MCSectionXCOFF *getContainingCsect(const MCSymbolXCOFF *XSym) {
+  if (XSym->isDefined())
+    return cast<MCSectionXCOFF>(XSym->getFragment()->getParent());
+  return XSym->getRepresentedCsect();
+}
+
 void XCOFFObjectWriter::executePostLayoutBinding(MCAssembler &Asm,
                                                  const MCAsmLayout &Layout) {
   if (TargetObjectWriter->is64Bit())
@@ -341,31 +347,33 @@ void XCOFFObjectWriter::executePostLayoutBinding(MCAssembler &Asm,
       continue;
 
     const MCSymbolXCOFF *XSym = cast<MCSymbolXCOFF>(&S);
-    const MCSectionXCOFF *ContainingCsect = XSym->getContainingCsect();
+    const MCSectionXCOFF *ContainingCsect = getContainingCsect(XSym);
 
-    // Handle undefined symbol.
     if (ContainingCsect->getCSectType() == XCOFF::XTY_ER) {
+      // Handle undefined symbol.
       UndefinedCsects.emplace_back(ContainingCsect);
       SectionMap[ContainingCsect] = &UndefinedCsects.back();
-      continue;
+    } else {
+      // If the symbol is the csect itself, we don't need to put the symbol
+      // into csect's Syms.
+      if (XSym == ContainingCsect->getQualNameSymbol())
+        continue;
+
+      // Only put a label into the symbol table when it is an external label.
+      if (!XSym->isExternal())
+        continue;
+
+      assert(SectionMap.find(ContainingCsect) != SectionMap.end() &&
+             "Expected containing csect to exist in map");
+      // Lookup the containing csect and add the symbol to it.
+      SectionMap[ContainingCsect]->Syms.emplace_back(XSym);
     }
-
-    // If the symbol is the csect itself, we don't need to put the symbol
-    // into csect's Syms.
-    if (XSym == ContainingCsect->getQualNameSymbol())
-      continue;
-
-    assert(SectionMap.find(ContainingCsect) != SectionMap.end() &&
-           "Expected containing csect to exist in map");
-
-    // Lookup the containing csect and add the symbol to it.
-    SectionMap[ContainingCsect]->Syms.emplace_back(XSym);
 
     // If the name does not fit in the storage provided in the symbol table
     // entry, add it to the string table.
     if (nameShouldBeInStringTable(XSym->getName()))
       Strings.add(XSym->getName());
-    }
+  }
 
   Strings.finalize();
   assignAddressesAndIndices(Layout);
@@ -392,7 +400,7 @@ void XCOFFObjectWriter::recordRelocation(MCAssembler &Asm,
       TargetObjectWriter->getRelocTypeAndSignSize(Target, Fixup, IsPCRel);
 
   const MCSectionXCOFF *SymASec =
-      cast<MCSymbolXCOFF>(SymA).getContainingCsect();
+      getContainingCsect(cast<MCSymbolXCOFF>(&SymA));
   assert(SectionMap.find(SymASec) != SectionMap.end() &&
          "Expected containing csect to exist in map.");
 
@@ -437,8 +445,14 @@ void XCOFFObjectWriter::writeSections(const MCAssembler &Asm,
     if (Section->Index == Section::UninitializedIndex || Section->IsVirtual)
       continue;
 
-    assert(CurrentAddressLocation == Section->Address &&
-           "Sections should be written consecutively.");
+    // There could be a gap (without corresponding zero padding) between
+    // sections.
+    assert(CurrentAddressLocation <= Section->Address &&
+           "CurrentAddressLocation should be less than or equal to section "
+           "address.");
+
+    CurrentAddressLocation = Section->Address;
+
     for (const auto *Group : Section->Groups) {
       for (const auto &Csect : *Group) {
         if (uint32_t PaddingSize = Csect.Address - CurrentAddressLocation)
@@ -764,7 +778,7 @@ void XCOFFObjectWriter::assignAddressesAndIndices(const MCAsmLayout &Layout) {
         SymbolIndexMap[MCSec->getQualNameSymbol()] = Csect.SymbolTableIndex;
         // 1 main and 1 auxiliary symbol table entry for the csect.
         SymbolTableIndex += 2;
-        
+
         for (auto &Sym : Csect.Syms) {
           Sym.SymbolTableIndex = SymbolTableIndex;
           SymbolIndexMap[Sym.MCSym] = Sym.SymbolTableIndex;

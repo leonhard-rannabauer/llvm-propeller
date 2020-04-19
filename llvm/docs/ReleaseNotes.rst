@@ -57,6 +57,12 @@ Non-comprehensive list of changes in this release
 Changes to the LLVM IR
 ----------------------
 
+* The callsite attribute `vector-function-abi-variant
+  <https://llvm.org/docs/LangRef.html#call-site-attributes>`_ has been
+  added to describe the mapping between scalar functions and vector
+  functions, to enable vectorization of call sites. The information
+  provided by the attribute is interfaced via the API provided by the
+  ``VFDatabase`` class.
 
 Changes to building LLVM
 ------------------------
@@ -66,6 +72,9 @@ Changes to the ARM Backend
 
 During this release ...
 
+* Implemented C-language intrinsics for the full Arm v8.1-M MVE instruction
+  set. ``<arm_mve.h>`` now supports the complete API defined in the Arm C
+  Language Extensions.
 
 Changes to the MIPS Target
 --------------------------
@@ -91,10 +100,17 @@ During this release ...
 Changes to the AMDGPU Target
 -----------------------------
 
+* The backend default denormal handling mode has been switched to on
+  for all targets for all compute function types. Frontends wishing to
+  retain the old behavior should explicitly request f32 denormal
+  flushing.
+
 Changes to the AVR Target
 -----------------------------
 
-During this release ...
+* Moved from an experimental backend to an official backend. AVR support is now
+  included by default in all LLVM builds and releases and is available under
+  the "avr-unknown-unknown" target triple.
 
 Changes to the WebAssembly Target
 ---------------------------------
@@ -117,6 +133,24 @@ Changes to the Go bindings
 
 Changes to the DAG infrastructure
 ---------------------------------
+
+
+Changes to the Debug Info
+---------------------------------
+
+* LLVM now supports the debug entry values (DW_OP_entry_value) production for
+  the x86, ARM, and AArch64 targets by default. Other targets can use
+  the utility by using the experimental option ("-debug-entry-values").
+  This is a debug info feature that allows debuggers to recover the value of
+  optimized-out parameters by going up a stack frame and interpreting the values
+  passed to the callee. The feature improves the debugging user experience when
+  debugging optimized code.
+
+Changes to the LLVM tools
+---------------------------------
+
+* Added an option (--show-section-sizes) to llvm-dwarfdump to show the sizes
+  of all debug sections within a file.
 
 Changes to LLDB
 ===============

@@ -158,6 +158,16 @@ MCSymbol *MCContext::getOrCreateLSDASymbol(StringRef FuncName) {
 
 MCSymbol *MCContext::createSymbolImpl(const StringMapEntry<bool> *Name,
                                       bool IsTemporary) {
+  static_assert(std::is_trivially_destructible<MCSymbolCOFF>(),
+                "MCSymbol classes must be trivially destructible");
+  static_assert(std::is_trivially_destructible<MCSymbolELF>(),
+                "MCSymbol classes must be trivially destructible");
+  static_assert(std::is_trivially_destructible<MCSymbolMachO>(),
+                "MCSymbol classes must be trivially destructible");
+  static_assert(std::is_trivially_destructible<MCSymbolWasm>(),
+                "MCSymbol classes must be trivially destructible");
+  static_assert(std::is_trivially_destructible<MCSymbolXCOFF>(),
+                "MCSymbol classes must be trivially destructible");
   if (MOFI) {
     switch (MOFI->getObjectFileType()) {
     case MCObjectFileInfo::IsCOFF:
@@ -405,6 +415,7 @@ MCSectionELF *MCContext::getELFSection(const Twine &Section, unsigned Type,
   StringRef Group = "";
   if (GroupSym)
     Group = GroupSym->getName();
+  assert(!(LinkedToSym && LinkedToSym->getName().empty()));
   // Do the lookup, if we have a hit, return it.
   auto IterBool = ELFUniquingMap.insert(std::make_pair(
       ELFSectionKey{Section.str(), Group,

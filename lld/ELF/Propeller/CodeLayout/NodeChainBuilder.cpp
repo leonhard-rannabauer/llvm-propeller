@@ -99,9 +99,9 @@ namespace propeller {
 // edges.
 void NodeChainBuilder::init() {
   for (ControlFlowGraph *cfg : cfgs) {
-    std::vector<std::vector<CFGNode *>> paths;
-    initMutuallyForcedEdges(*cfg, paths);
-    initNodeChains(*cfg, paths);
+    std::vector<std::vector<CFGNode *>> bundles;
+    initBundles(*cfg, bundles);
+    initNodeChains(*cfg, bundles);
   }
 }
 
@@ -110,21 +110,17 @@ void NodeChainBuilder::init() {
 // the extend TSP score, this function will only affect the cold basic blocks
 // and thus we do not need to consider the edge weights.
 void NodeChainBuilder::attachFallThroughs() {
-  for (ControlFlowGraph *Cfg : cfgs) {
+  for (ControlFlowGraph *cfg : cfgs) {
     // First, try to keep the fall-throughs from the original order.
-    for (auto &Node : Cfg->nodes) {
-      if (Node->ftEdge != nullptr) {
-        attachNodes(Node.get(), Node->ftEdge->sink);
-      }
-    }
+    for (auto &node : cfg->nodes)
+      if (node->ftEdge != nullptr)
+        attachNodes(node.get(), node->ftEdge->sink);
 
     // Sometimes, the original fall-throughs cannot be kept. So we try to find
     // new fall-through opportunities which did not exist in the original order.
-    for (auto &Edge : Cfg->intraEdges) {
-      if (Edge->type == CFGEdge::EdgeType::INTRA_FUNC ||
-          Edge->type == CFGEdge::EdgeType::INTRA_DYNA)
-        attachNodes(Edge->src, Edge->sink);
-    }
+    for (auto &edge : cfg->intraEdges)
+      if (!edge->isCall() && !edge->isReturn())
+        attachNodes(edge->src, edge->sink);
   }
 }
 
@@ -142,8 +138,8 @@ void NodeChainBuilder::coalesceChains() {
           error("Attempting to coalesce chains belonging to different "
                 "functions.");
         // Always place the hot chains before cold ones
-        if (c1->freq == 0 ^ c2->freq == 0)
-          return c1->freq != 0;
+        if (c1->isHot() != c2->isHot())
+          return c1->isHot();
 
         // Place the entry node's chain before other chains
         auto *entryNode = c1->controlFlowGraph->getEntryNode();
@@ -170,7 +166,7 @@ void NodeChainBuilder::coalesceChains() {
       continue;
     }
     // Create a cold partition when -propeller-split-funcs is set.
-    if (propConfig.optSplitFuncs && (mergerChain->freq != 0 && c->freq == 0)) {
+    if (propConfig.optSplitFuncs && (mergerChain->isHot() && !c->isHot())) {
       mergerChain = c;
       continue;
     }
@@ -183,7 +179,7 @@ void NodeChainBuilder::coalesceChains() {
 void NodeChainBuilder::mergeChains(NodeChain *leftChain,
                                    NodeChain *rightChain) {
   if ((propConfig.optReorderIP || propConfig.optSplitFuncs) &&
-      (leftChain->freq == 0 ^ rightChain->freq == 0))
+      leftChain->isHot() != rightChain->isHot())
     error("Attempting to merge hot and cold chains: \n" + toString(*leftChain) +
           "\nAND\n" + toString(*rightChain));
 
@@ -222,7 +218,7 @@ bool NodeChainBuilder::attachNodes(CFGNode *src, CFGNode *sink) {
     return false;
 
   // Ignore edges between hot and cold basic blocks.
-  if (src->freq == 0 ^ sink->freq == 0)
+  if (getNodeChain(src)->isHot() != getNodeChain(sink)->isHot())
     return false;
   NodeChain *srcChain = getNodeChain(src);
   NodeChain *sinkChain = getNodeChain(sink);
@@ -237,24 +233,6 @@ bool NodeChainBuilder::attachNodes(CFGNode *src, CFGNode *sink) {
   // Attaching is possible. So we merge the chains in the corresponding order.
   mergeChains(srcChain, sinkChain);
   return true;
-}
-
-void NodeChainBuilder::bundleNodes(
-    NodeChain *chain, std::list<std::unique_ptr<CFGNodeBundle>>::iterator begin,
-    std::list<std::unique_ptr<CFGNodeBundle>>::iterator end) {
-  CFGNodeBundle *bundle = (begin == chain->nodeBundles.begin())
-                              ? nullptr
-                              : (*std::prev(begin)).get();
-  for (auto it = begin; it != end;) {
-    if (!bundle || (*it)->delegateNode->controlFlowGraph !=
-                       bundle->delegateNode->controlFlowGraph) {
-      bundle = (*it).get();
-      it++;
-    } else {
-      bundle->merge((*it).get());
-      it = chain->nodeBundles.erase(it);
-    }
-  }
 }
 
 // This function merges the in-and-out chain-edges of one chain (mergeeChain)
@@ -299,11 +277,7 @@ void NodeChainBuilder::mergeInOutEdges(NodeChain *mergerChain,
 // NodeChainAssembly is an ordered triple of three slices from two chains.
 void NodeChainBuilder::mergeChains(
     std::unique_ptr<NodeChainAssembly> assembly) {
-  if (assembly->splitChain()->freq == 0 ^ assembly->unsplitChain()->freq == 0)
-    error("Attempting to merge hot and cold chains: \n" +
-          toString(*assembly.get()));
-
-  if (assembly->splitChain()->freq == 0 ^ assembly->unsplitChain()->freq == 0)
+  if (assembly->splitChain()->isHot() != assembly->unsplitChain()->isHot())
     error("Attempting to merge hot and cold chains: \n" +
           toString(*assembly.get()));
 
@@ -387,38 +361,40 @@ void NodeChainBuilder::mergeChains(
     runningOffset += (*it)->size;
   }
 
-  if (assembly->splitChain()->size + assembly->unsplitChain()->size >
-      propConfig.optChainSplitThreshold) {
-    if (assembly->splitChain()->size <= propConfig.optChainSplitThreshold &&
-        assembly->unsplitChain()->size <= propConfig.optChainSplitThreshold)
-      bundleNodes(mergerChain, mergerChain->nodeBundles.begin(),
-                  mergerChain->nodeBundles.end());
-    else if (assembly->unsplitChain()->size <=
-             propConfig.optChainSplitThreshold)
-      bundleNodes(mergerChain, UBegin, mergerChain->nodeBundles.end());
-    else if (assembly->splitChain()->size <=
-             propConfig.optChainSplitThreshold) {
+  bool bundlesChanged = false;
+  if (assembly->needsBundling) {
+    if (assembly->splitChain()->bundled && assembly->unsplitChain()->bundled)
+      bundlesChanged = mergerChain->bundleNodes(UBegin, std::next(UBegin));
+    else if (assembly->splitChain()->bundled)
+      bundlesChanged =
+          mergerChain->bundleNodes(UBegin, mergerChain->nodeBundles.end());
+    else if (assembly->unsplitChain()->bundled)
       switch (assembly->mergeOrder) {
       case S2S1U:
-        bundleNodes(mergerChain, mergerChain->nodeBundles.begin(),
-                    std::next(UBegin));
+        bundlesChanged = mergerChain->bundleNodes(
+            mergerChain->nodeBundles.begin(), std::next(UBegin));
         break;
       case S1US2:
-        bundleNodes(mergerChain, S1Begin, std::next(UBegin));
-        bundleNodes(mergerChain, S2Begin, mergerChain->nodeBundles.end());
+        bundlesChanged = mergerChain->bundleNodes(S1Begin, std::next(UBegin));
+        bundlesChanged |=
+            mergerChain->bundleNodes(S2Begin, mergerChain->nodeBundles.end());
         break;
       case S2US1:
-        bundleNodes(mergerChain, S2Begin, std::next(UBegin));
-        bundleNodes(mergerChain, S1Begin, mergerChain->nodeBundles.end());
+        bundlesChanged = mergerChain->bundleNodes(S2Begin, std::next(UBegin));
+        bundlesChanged |=
+            mergerChain->bundleNodes(S1Begin, mergerChain->nodeBundles.end());
         break;
       case US2S1:
-        bundleNodes(mergerChain, S2Begin, mergerChain->nodeBundles.end());
+        bundlesChanged =
+            mergerChain->bundleNodes(S2Begin, mergerChain->nodeBundles.end());
         break;
       default:
         break;
       }
-    } else
-      bundleNodes(mergerChain, UBegin, std::next(UBegin));
+    else // !assembly->splitChain()->bundled &&
+         // !assembly->unsplitChain()->bundled
+      bundlesChanged = mergerChain->bundleNodes();
+    mergerChain->bundled = true;
   }
 
   mergerChain->size += mergeeChain->size;
@@ -433,7 +409,8 @@ void NodeChainBuilder::mergeChains(
   // mergerChain->bundleScore += mergeeChain->bundleScore;
   mergerChain->score += mergeeChain->score + assembly->scoreGain;
 
-  adjustExtTSPScore(mergerChain);
+  if (bundlesChanged)
+    adjustExtTSPScore(mergerChain);
 
   mergerChain->debugChain |= mergeeChain->debugChain;
 
@@ -546,7 +523,7 @@ bool NodeChainBuilder::updateNodeChainAssembly(NodeChain *splitChain,
                                                NodeChain *unsplitChain) {
   // Only consider splitting the chain if the size of the chain is smaller than
   // a threshold.
-  // bool doSplit = (splitChain->size <= propConfig.optChainSplitThreshold);
+  // bool doSplit = (splitChain->size <= 4096);
   // If we are not splitting, we only consider the slice position at the
   // beginning of the chain (effectively no splitting).
   // auto slicePosEnd =
@@ -562,9 +539,13 @@ bool NodeChainBuilder::updateNodeChainAssembly(NodeChain *splitChain,
        slicePos != splitChain->nodeBundles.end(); ++slicePos) {
     // If the split position is at the beginning (no splitting), only consider
     // one MergeOrder
-    auto mergeOrderEnd = (slicePos == splitChain->nodeBundles.begin())
-                             ? MergeOrder::BeginNext
-                             : MergeOrder::End;
+    auto mergeOrderEnd =
+        (slicePos == splitChain->nodeBundles.begin() ||
+         (splitChain->bundled &&
+          (*std::prev(slicePos))->delegateNode->controlFlowGraph ==
+              (*slicePos)->delegateNode->controlFlowGraph))
+            ? MergeOrder::BeginNext
+            : MergeOrder::End;
     for (uint8_t MI = MergeOrder::Begin; MI != mergeOrderEnd; MI++) {
       MergeOrder mOrder = static_cast<MergeOrder>(MI);
 
@@ -583,10 +564,10 @@ bool NodeChainBuilder::updateNodeChainAssembly(NodeChain *splitChain,
   if (bestAssembly) {
     if (splitChain->debugChain || unsplitChain->debugChain)
       fprintf(stderr, "INSERTING ASSEMBLY: %s\n",
-              toString(*bestAssembly).c_str());
+              toString(*bestAssembly.get()).c_str());
 
-    nodeChainAssemblies.insert(bestAssembly->chainPair,
-                               std::move(bestAssembly));
+    auto p = bestAssembly->chainPair;
+    nodeChainAssemblies.insert(p, std::move(bestAssembly));
     return true;
   }
 
@@ -604,58 +585,50 @@ void NodeChainBuilder::initNodeChains(
   }
 }
 
-// Find all the mutually-forced edges.
-// These are all the edges which are -- based on the profile -- the only
-// (executed) outgoing edge from their source node and the only (executed)
-// incoming edges to their sink nodes
-void NodeChainBuilder::initMutuallyForcedEdges(
-    ControlFlowGraph &cfg, std::vector<std::vector<CFGNode *>> &paths) {
-  DenseMap<CFGNode *, CFGNode *> mutuallyForcedOut;
+// Compute all the bundles which will be fixed in the layout and won't be split.
+void NodeChainBuilder::initBundles(
+    ControlFlowGraph &cfg, std::vector<std::vector<CFGNode *>> &bundles) {
 
-  DenseMap<CFGNode *, std::vector<CFGEdge *>> profiledOuts;
-  DenseMap<CFGNode *, std::vector<CFGEdge *>> profiledIns;
+  // Find all the mutually-forced-edges.
+  // These are all the edges which are -- based on the profile -- the only
+  // (executed) outgoing edge from their source node and the only (executed)
+  // incoming edges to their sink nodes
+  DenseMap<CFGNode *, CFGNode *> singleHotOut;
+  DenseMap<CFGNode *, unsigned> hotIns;
 
-  for (auto &node : cfg.nodes) {
-    std::copy_if(node->outs.begin(), node->outs.end(),
-                 std::back_inserter(profiledOuts[node.get()]),
-                 [](CFGEdge *edge) {
-                   return (edge->type == CFGEdge::EdgeType::INTRA_FUNC ||
-                           edge->type == CFGEdge::EdgeType::INTRA_DYNA) &&
-                          edge->weight != 0;
-                 });
-    std::copy_if(node->ins.begin(), node->ins.end(),
-                 std::back_inserter(profiledIns[node.get()]),
-                 [](CFGEdge *edge) {
-                   return (edge->type == CFGEdge::EdgeType::INTRA_FUNC ||
-                           edge->type == CFGEdge::EdgeType::INTRA_DYNA) &&
-                          edge->weight != 0;
-                 });
+  for (auto &edge : cfg.intraEdges) {
+    if (!edge->weight)
+      continue;
+    if (edge->isCall() || edge->isReturn())
+      continue;
+    auto r = singleHotOut.try_emplace(edge->src, edge->sink);
+    if (!r.second && r.first->second)
+      r.first->second = nullptr;
+    hotIns[edge->sink]++;
   }
 
-  for (auto &node : cfg.nodes) {
-    if (profiledOuts[node.get()].size() == 1) {
-      CFGEdge *edge = profiledOuts[node.get()].front();
-      if (profiledIns[edge->sink].size() == 1)
-        mutuallyForcedOut.try_emplace(node.get(), edge->sink);
-    }
+  DenseMap<CFGNode *, CFGNode *> bundleNext;
+
+  for (auto &elem : singleHotOut) {
+    if (!elem.second || hotIns[elem.second] != 1)
+      continue;
+    bundleNext.insert(elem);
   }
 
-  // Break cycles in the mutually forced edges by cutting the edge sinking to
+  // Break cycles in the bundleNext map by cutting the edge sinking to
   // the smallest address in every cycle (hopefully a loop backedge)
   DenseMap<CFGNode *, unsigned> nodeToPathMap;
   SmallVector<CFGNode *, 16> cycleCutNodes;
   unsigned pathCount = 0;
-  for (auto it = mutuallyForcedOut.begin(); it != mutuallyForcedOut.end();
-       ++it) {
+  for (auto it = bundleNext.begin(); it != bundleNext.end(); ++it) {
     // Check to see if the node (and its cycle) have already been visited.
     if (nodeToPathMap[it->first])
       continue;
-    CFGEdge *victimEdge = nullptr;
+    CFGNode *victimNode = nullptr;
     auto nodeIt = it;
     pathCount++;
-    while (nodeIt != mutuallyForcedOut.end()) {
-      CFGNode *node = nodeIt->first;
-      unsigned path = nodeToPathMap[node];
+    while (nodeIt != bundleNext.end()) {
+      unsigned path = nodeToPathMap[nodeIt->first];
       if (path != 0) {
         // If this node is marked with a number, either it is the same number,
         // in which case we have found a cycle. Or it is a different number,
@@ -663,40 +636,35 @@ void NodeChainBuilder::initMutuallyForcedEdges(
         // (non-cycle).
         if (path == pathCount) {
           // We have found a cycle: add the victim edge
-          cycleCutNodes.push_back(victimEdge->src);
+          cycleCutNodes.push_back(victimNode);
         }
         break;
       } else
-        nodeToPathMap[node] = pathCount;
-      if (!profiledOuts[node].empty()) {
-        CFGEdge *edge = profiledOuts[node].front();
-        if (!victimEdge ||
-            (edge->sink->mappedAddr < victimEdge->sink->mappedAddr)) {
-          victimEdge = edge;
-        }
-      }
-      nodeIt = mutuallyForcedOut.find(nodeIt->second);
+        nodeToPathMap[nodeIt->first] = pathCount;
+
+      if (!victimNode ||
+          (nodeIt->second->mappedAddr < bundleNext[victimNode]->mappedAddr))
+        victimNode = nodeIt->first;
+      nodeIt = bundleNext.find(nodeIt->second);
     }
   }
 
-  // Remove the victim edges to break cycles in the mutually forced edges
+  // Remove the victim nodes to break cycles in the bundles
   for (CFGNode *node : cycleCutNodes)
-    mutuallyForcedOut.erase(node);
+    bundleNext.erase(node);
 
-  DenseSet<CFGNode *> mutuallyForcedIn;
-  for (auto &elem : mutuallyForcedOut)
-    mutuallyForcedIn.insert(elem.second);
+  DenseSet<CFGNode *> hasBundlePrev;
+  for (auto &elem : bundleNext)
+    hasBundlePrev.insert(elem.second);
 
-  for (auto it = mutuallyForcedOut.begin(); it != mutuallyForcedOut.end();
-       ++it) {
-    if (!mutuallyForcedIn.count(it->first)) {
+  // Construct paths based on the bundleNext map
+  for (auto it = bundleNext.begin(); it != bundleNext.end(); ++it) {
+    if (!hasBundlePrev.count(it->first)) {
       std::vector<CFGNode *> path(1, it->first);
-      auto itt = it;
-      do {
+      for (auto itt = it; itt != bundleNext.end();
+           itt = bundleNext.find(itt->second))
         path.push_back(itt->second);
-      } while ((itt = mutuallyForcedOut.find(itt->second)) !=
-               mutuallyForcedOut.end());
-      paths.push_back(std::move(path));
+      bundles.push_back(std::move(path));
     }
   }
 }
@@ -708,7 +676,7 @@ void NodeChainBuilder::initializeExtTSP() {
   // and its merge candidate chain.
   candidateChains.clear();
   for (NodeChain *chain : components[currentComponent])
-    chain->score = chain->freq ? computeExtTSPScore(chain) : 0;
+    chain->score = chain->isHot() ? computeExtTSPScore(chain) : 0;
 
   DenseSet<std::pair<NodeChain *, NodeChain *>> visited;
 
@@ -745,7 +713,7 @@ void NodeChainBuilder::initializeChainComponents() {
   for (DenseMapPair<uint64_t, std::unique_ptr<NodeChain>> &elem : chains) {
     NodeChain *chain = elem.second.get();
     // Cold chains will not be placed in any component.
-    if (!chain->freq)
+    if (!chain->isHot())
       continue;
     // Skip if this chain has already been assigned to a component.
     if (!chainToComponentMap.try_emplace(chain, componentId).second)
@@ -777,7 +745,7 @@ void NodeChainBuilder::mergeAllChains() {
   for (auto &elem : chains) {
     auto *chain = elem.second.get();
     // Ignore cold chains as they cannot have any hot edges to other nodes
-    if (!chain->freq)
+    if (!chain->isHot())
       continue;
     auto addEdge = [chain](CFGEdge &edge) {
       // Ignore returns and zero-frequency edges as these edges will not be used
@@ -846,8 +814,8 @@ void NodeChainBuilder::doOrder(std::unique_ptr<ChainClustering> &clustering) {
       std::list<CFGNode *> nodeOrder;
       for (auto &elem : chains) {
         auto *chain = elem.second.get();
-        for (auto& bundle : chain->nodeBundles)
-          nodeOrder.insert(chain->freq ? nodeOrder.begin() : nodeOrder.end(),
+        for (auto &bundle : chain->nodeBundles)
+          nodeOrder.insert(chain->isHot() ? nodeOrder.begin() : nodeOrder.end(),
                            bundle->nodes.begin(), bundle->nodes.end());
       }
       prop->protobufPrinter->addCFG(*cfg, &nodeOrder);

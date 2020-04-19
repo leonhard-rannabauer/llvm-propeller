@@ -331,7 +331,7 @@ class BranchCC_rri<bits<3> funct3, string opcodestr>
     : RVInstB<funct3, OPC_BRANCH, (outs),
               (ins GPR:$rs1, GPR:$rs2, simm13_lsb0:$imm12),
               opcodestr, "$rs1, $rs2, $imm12">,
-      Sched<[WriteJmp]> {
+      Sched<[WriteJmp, ReadJmp, ReadJmp]> {
   let isBranch = 1;
   let isTerminator = 1;
 }
@@ -1164,3 +1164,4 @@ include "RISCVInstrInfoA.td"
 include "RISCVInstrInfoF.td"
 include "RISCVInstrInfoD.td"
 include "RISCVInstrInfoC.td"
+include "RISCVInstrInfoB.td"

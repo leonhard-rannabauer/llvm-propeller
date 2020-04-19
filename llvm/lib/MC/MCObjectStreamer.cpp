@@ -367,9 +367,9 @@ bool MCObjectStreamer::mayHaveInstructions(MCSection &Sec) const {
 
 void MCObjectStreamer::emitInstruction(const MCInst &Inst,
                                        const MCSubtargetInfo &STI) {
-  getAssembler().getBackend().alignBranchesBegin(*this, Inst);
+  getAssembler().getBackend().emitInstructionBegin(*this, Inst);
   emitInstructionImpl(Inst, STI);
-  getAssembler().getBackend().alignBranchesEnd(*this, Inst);
+  getAssembler().getBackend().emitInstructionEnd(*this, Inst);
 }
 
 void MCObjectStreamer::emitInstructionImpl(const MCInst &Inst,
@@ -385,7 +385,9 @@ void MCObjectStreamer::emitInstructionImpl(const MCInst &Inst,
 
   // If this instruction doesn't need relaxation, just emit it as data.
   MCAssembler &Assembler = getAssembler();
-  if (!Assembler.getBackend().mayNeedRelaxation(Inst, STI)) {
+  MCAsmBackend &Backend = Assembler.getBackend();
+  if (!(Backend.mayNeedRelaxation(Inst, STI) ||
+        Backend.allowEnhancedRelaxation())) {
     EmitInstToData(Inst, STI);
     return;
   }
@@ -397,8 +399,7 @@ void MCObjectStreamer::emitInstructionImpl(const MCInst &Inst,
   //   fragment.
   if (Assembler.getRelaxAll() ||
       (Assembler.isBundlingEnabled() && Sec->isBundleLocked())) {
-    MCInst Relaxed;
-    getAssembler().getBackend().relaxInstruction(Inst, STI, Relaxed);
+    MCInst Relaxed = Inst;
     while (getAssembler().getBackend().mayNeedRelaxation(Relaxed, STI))
       getAssembler().getBackend().relaxInstruction(Relaxed, STI, Relaxed);
     EmitInstToData(Relaxed, STI);
@@ -431,15 +432,15 @@ static const char *const BundlingNotImplementedMsg =
   "Aligned bundling is not implemented for this object format";
 #endif
 
-void MCObjectStreamer::EmitBundleAlignMode(unsigned AlignPow2) {
+void MCObjectStreamer::emitBundleAlignMode(unsigned AlignPow2) {
   llvm_unreachable(BundlingNotImplementedMsg);
 }
 
-void MCObjectStreamer::EmitBundleLock(bool AlignToEnd) {
+void MCObjectStreamer::emitBundleLock(bool AlignToEnd) {
   llvm_unreachable(BundlingNotImplementedMsg);
 }
 
-void MCObjectStreamer::EmitBundleUnlock() {
+void MCObjectStreamer::emitBundleUnlock() {
   llvm_unreachable(BundlingNotImplementedMsg);
 }
 
@@ -660,7 +661,7 @@ void MCObjectStreamer::emitGPRel64Value(const MCExpr *Value) {
   DF->getContents().resize(DF->getContents().size() + 8, 0);
 }
 
-bool MCObjectStreamer::EmitRelocDirective(const MCExpr &Offset, StringRef Name,
+bool MCObjectStreamer::emitRelocDirective(const MCExpr &Offset, StringRef Name,
                                           const MCExpr *Expr, SMLoc Loc,
                                           const MCSubtargetInfo &STI) {
   Optional<MCFixupKind> MaybeKind = Assembler->getBackend().getFixupKind(Name);
@@ -738,15 +739,15 @@ void MCObjectStreamer::emitFill(const MCExpr &NumValues, int64_t Size,
   insert(new MCFillFragment(Expr, Size, NumValues, Loc));
 }
 
-void MCObjectStreamer::EmitFileDirective(StringRef Filename) {
+void MCObjectStreamer::emitFileDirective(StringRef Filename) {
   getAssembler().addFileName(Filename);
 }
 
-void MCObjectStreamer::EmitAddrsig() {
+void MCObjectStreamer::emitAddrsig() {
   getAssembler().getWriter().emitAddrsigSection();
 }
 
-void MCObjectStreamer::EmitAddrsigSym(const MCSymbol *Sym) {
+void MCObjectStreamer::emitAddrsigSym(const MCSymbol *Sym) {
   getAssembler().registerSymbol(*Sym);
   getAssembler().getWriter().addAddrsigSymbol(Sym);
 }

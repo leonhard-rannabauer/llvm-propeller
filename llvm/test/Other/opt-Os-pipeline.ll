@@ -29,7 +29,6 @@
 ; CHECK-NEXT:   ModulePass Manager
 ; CHECK-NEXT:     Force set function attributes
 ; CHECK-NEXT:     Infer set function attributes
-; CHECK-NEXT:     Deduce and propagate attributes
 ; CHECK-NEXT:     Interprocedural Sparse Conditional Constant Propagation
 ; CHECK-NEXT:       FunctionPass Manager
 ; CHECK-NEXT:         Dominator Tree Construction
@@ -59,7 +58,6 @@
 ; CHECK-NEXT:     Call Graph SCC Pass Manager
 ; CHECK-NEXT:       Remove unused exception handling info
 ; CHECK-NEXT:       Function Integration/Inlining
-; CHECK-NEXT:       Deduce and propagate attributes (CGSCC pass)
 ; CHECK-NEXT:       OpenMP specific optimizations
 ; CHECK-NEXT:       Deduce function attributes
 ; CHECK-NEXT:       FunctionPass Manager
@@ -212,6 +210,8 @@
 ; CHECK-NEXT:       Optimization Remark Emitter
 ; CHECK-NEXT:       Inject TLI Mappings
 ; CHECK-NEXT:       Loop Vectorization
+; CHECK-NEXT:       Optimize scalar/vector ops
+; CHECK-NEXT:       Early CSE
 ; CHECK-NEXT:       Canonicalize natural loops
 ; CHECK-NEXT:       Scalar Evolution Analysis
 ; CHECK-NEXT:       Function Alias Analysis Results
@@ -219,7 +219,6 @@
 ; CHECK-NEXT:       Lazy Branch Probability Analysis
 ; CHECK-NEXT:       Lazy Block Frequency Analysis
 ; CHECK-NEXT:       Loop Load Elimination
-; CHECK-NEXT:       Optimize scalar/vector ops
 ; CHECK-NEXT:       Basic Alias Analysis (stateless AA impl)
 ; CHECK-NEXT:       Function Alias Analysis Results
 ; CHECK-NEXT:       Lazy Branch Probability Analysis
@@ -236,9 +235,8 @@
 ; CHECK-NEXT:       Lazy Branch Probability Analysis
 ; CHECK-NEXT:       Lazy Block Frequency Analysis
 ; CHECK-NEXT:       Optimization Remark Emitter
+; CHECK-NEXT:       Inject TLI Mappings
 ; CHECK-NEXT:       SLP Vectorizer
-; CHECK-NEXT:       Optimize scalar/vector ops
-; CHECK-NEXT:       Function Alias Analysis Results
 ; CHECK-NEXT:       Optimization Remark Emitter
 ; CHECK-NEXT:       Combine redundant instructions
 ; CHECK-NEXT:       Canonicalize natural loops

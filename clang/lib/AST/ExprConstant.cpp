@@ -54,6 +54,7 @@
 #include "clang/Basic/TargetInfo.h"
 #include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallBitVector.h"
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cstring>
@@ -674,6 +675,7 @@ namespace {
     None,
     Bases,
     AfterBases,
+    AfterFields,
     Destroying,
     DestroyingBases
   };
@@ -820,6 +822,9 @@ namespace {
       }
       void finishedConstructingBases() {
         EI.ObjectsUnderConstruction[Object] = ConstructionPhase::AfterBases;
+      }
+      void finishedConstructingFields() {
+        EI.ObjectsUnderConstruction[Object] = ConstructionPhase::AfterFields;
       }
       ~EvaluatingConstructorRAII() {
         if (DidInsert) EI.ObjectsUnderConstruction.erase(Object);
@@ -1415,6 +1420,31 @@ static bool isAnyAccess(AccessKinds AK) {
 /// Is this an access per the C++ definition?
 static bool isFormalAccess(AccessKinds AK) {
   return isAnyAccess(AK) && AK != AK_Construct && AK != AK_Destroy;
+}
+
+/// Is this kind of axcess valid on an indeterminate object value?
+static bool isValidIndeterminateAccess(AccessKinds AK) {
+  switch (AK) {
+  case AK_Read:
+  case AK_Increment:
+  case AK_Decrement:
+    // These need the object's value.
+    return false;
+
+  case AK_ReadObjectRepresentation:
+  case AK_Assign:
+  case AK_Construct:
+  case AK_Destroy:
+    // Construction and destruction don't need the value.
+    return true;
+
+  case AK_MemberCall:
+  case AK_DynamicCast:
+  case AK_TypeId:
+    // These aren't really meaningful on scalars.
+    return true;
+  }
+  llvm_unreachable("unknown access kind");
 }
 
 namespace {
@@ -3022,15 +3052,22 @@ static void expandArray(APValue &Array, unsigned Index) {
 /// is trivial. Note that this is never true for a union type with fields
 /// (because the copy always "reads" the active member) and always true for
 /// a non-class type.
+static bool isReadByLvalueToRvalueConversion(const CXXRecordDecl *RD);
 static bool isReadByLvalueToRvalueConversion(QualType T) {
   CXXRecordDecl *RD = T->getBaseElementTypeUnsafe()->getAsCXXRecordDecl();
-  if (!RD || (RD->isUnion() && !RD->field_empty()))
-    return true;
+  return !RD || isReadByLvalueToRvalueConversion(RD);
+}
+static bool isReadByLvalueToRvalueConversion(const CXXRecordDecl *RD) {
+  // FIXME: A trivial copy of a union copies the object representation, even if
+  // the union is empty.
+  if (RD->isUnion())
+    return !RD->field_empty();
   if (RD->isEmpty())
     return false;
 
   for (auto *Field : RD->fields())
-    if (isReadByLvalueToRvalueConversion(Field->getType()))
+    if (!Field->isUnnamedBitfield() &&
+        isReadByLvalueToRvalueConversion(Field->getType()))
       return true;
 
   for (auto &BaseSpec : RD->bases())
@@ -3140,6 +3177,13 @@ struct CompleteObject {
       : Base(Base), Value(Value), Type(Type) {}
 
   bool mayAccessMutableMembers(EvalInfo &Info, AccessKinds AK) const {
+    // If this isn't a "real" access (eg, if it's just accessing the type
+    // info), allow it. We assume the type doesn't change dynamically for
+    // subobjects of constexpr objects (even though we'd hit UB here if it
+    // did). FIXME: Is this right?
+    if (!isAnyAccess(AK))
+      return true;
+
     // In C++14 onwards, it is permitted to read a mutable member whose
     // lifetime began within the evaluation.
     // FIXME: Should we also allow this in C++11?
@@ -3194,9 +3238,8 @@ findSubobject(EvalInfo &Info, const Expr *E, const CompleteObject &Obj,
   for (unsigned I = 0, N = Sub.Entries.size(); /**/; ++I) {
     // Reading an indeterminate value is undefined, but assigning over one is OK.
     if ((O->isAbsent() && !(handler.AccessKind == AK_Construct && I == N)) ||
-        (O->isIndeterminate() && handler.AccessKind != AK_Construct &&
-         handler.AccessKind != AK_Assign &&
-         handler.AccessKind != AK_ReadObjectRepresentation)) {
+        (O->isIndeterminate() &&
+         !isValidIndeterminateAccess(handler.AccessKind))) {
       if (!Info.checkingPotentialConstantExpression())
         Info.FFDiag(E, diag::note_constexpr_access_uninit)
             << handler.AccessKind << O->isIndeterminate();
@@ -3569,6 +3612,7 @@ static CompleteObject findCompleteObject(EvalInfo &Info, const Expr *E,
     /// Nested immediate invocation have been previously removed so if we found
     /// a ConstantExpr it can only be the EvaluatingDecl.
     assert(CE->isImmediateInvocation() && CE == Info.EvaluatingDecl);
+    (void)CE;
     BaseVal = Info.EvaluatingDeclValue;
   } else if (const ValueDecl *D = LVal.Base.dyn_cast<const ValueDecl *>()) {
     // In C++98, const, non-volatile integers initialized with ICEs are ICEs.
@@ -4932,6 +4976,13 @@ static bool CheckConstexprFunction(EvalInfo &Info, SourceLocation CallLoc,
     return false;
   }
 
+  if (const auto *CtorDecl = dyn_cast_or_null<CXXConstructorDecl>(Definition)) {
+    for (const auto *InitExpr : CtorDecl->inits()) {
+      if (InitExpr->getInit() && InitExpr->getInit()->containsErrors())
+        return false;
+    }
+  }
+
   // Can we evaluate this function call?
   if (Definition && Definition->isConstexpr() && Body)
     return true;
@@ -5082,6 +5133,7 @@ static Optional<DynamicType> ComputeDynamicType(EvalInfo &Info, const Expr *E,
 
     case ConstructionPhase::None:
     case ConstructionPhase::AfterBases:
+    case ConstructionPhase::AfterFields:
     case ConstructionPhase::Destroying:
       // We've finished constructing the base classes and not yet started
       // destroying them again, so this is the dynamic type.
@@ -5300,7 +5352,10 @@ static bool HandleDynamicCast(EvalInfo &Info, const ExplicitCastExpr *E,
 
 namespace {
 struct StartLifetimeOfUnionMemberHandler {
+  EvalInfo &Info;
+  const Expr *LHSExpr;
   const FieldDecl *Field;
+  bool DuringInit;
 
   static const AccessKinds AccessKind = AK_Assign;
 
@@ -5316,9 +5371,21 @@ struct StartLifetimeOfUnionMemberHandler {
     //  * No variant members' lifetimes begin
     //  * All scalar subobjects whose lifetimes begin have indeterminate values
     assert(SubobjType->isUnionType());
-    if (!declaresSameEntity(Subobj.getUnionField(), Field) ||
-        !Subobj.getUnionValue().hasValue())
-      Subobj.setUnion(Field, getDefaultInitValue(Field->getType()));
+    if (declaresSameEntity(Subobj.getUnionField(), Field)) {
+      // This union member is already active. If it's also in-lifetime, there's
+      // nothing to do.
+      if (Subobj.getUnionValue().hasValue())
+        return true;
+    } else if (DuringInit) {
+      // We're currently in the process of initializing a different union
+      // member.  If we carried on, that initialization would attempt to
+      // store to an inactive union member, resulting in undefined behavior.
+      Info.FFDiag(LHSExpr,
+                  diag::note_constexpr_union_member_change_during_init);
+      return false;
+    }
+
+    Subobj.setUnion(Field, getDefaultInitValue(Field->getType()));
     return true;
   }
   bool found(APSInt &Value, QualType SubobjType) {
@@ -5421,28 +5488,15 @@ static bool HandleUnionActiveMemberChange(EvalInfo &Info, const Expr *LHSExpr,
     SubobjectDesignator D = LHS.Designator;
     D.truncate(Info.Ctx, LHS.Base, LengthAndField.first);
 
-    StartLifetimeOfUnionMemberHandler StartLifetime{LengthAndField.second};
+    bool DuringInit = Info.isEvaluatingCtorDtor(LHS.Base, D.Entries) ==
+                      ConstructionPhase::AfterBases;
+    StartLifetimeOfUnionMemberHandler StartLifetime{
+        Info, LHSExpr, LengthAndField.second, DuringInit};
     if (!findSubobject(Info, LHSExpr, Obj, D, StartLifetime))
       return false;
   }
 
   return true;
-}
-
-/// Determine if a class has any fields that might need to be copied by a
-/// trivial copy or move operation.
-static bool hasFields(const CXXRecordDecl *RD) {
-  if (!RD || RD->isEmpty())
-    return false;
-  for (auto *FD : RD->fields()) {
-    if (FD->isUnnamedBitfield())
-      continue;
-    return true;
-  }
-  for (auto &Base : RD->bases())
-    if (hasFields(Base.getType()->getAsCXXRecordDecl()))
-      return true;
-  return false;
 }
 
 namespace {
@@ -5469,6 +5523,8 @@ static bool EvaluateArgs(ArrayRef<const Expr *> Args, ArgVector &ArgValues,
         }
     }
   }
+  // FIXME: This is the wrong evaluation order for an assignment operator
+  // called via operator syntax.
   for (unsigned Idx = 0; Idx < Args.size(); Idx++) {
     if (!Evaluate(ArgValues[Idx], Info, Args[Idx])) {
       // If we're checking for a potential constant expression, evaluate all
@@ -5513,7 +5569,8 @@ static bool HandleFunctionCall(SourceLocation CallLoc,
   const CXXMethodDecl *MD = dyn_cast<CXXMethodDecl>(Callee);
   if (MD && MD->isDefaulted() &&
       (MD->getParent()->isUnion() ||
-       (MD->isTrivial() && hasFields(MD->getParent())))) {
+       (MD->isTrivial() &&
+        isReadByLvalueToRvalueConversion(MD->getParent())))) {
     assert(This &&
            (MD->isCopyAssignmentOperator() || MD->isMoveAssignmentOperator()));
     LValue RHS;
@@ -5600,7 +5657,8 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
   // actually read them.
   if (Definition->isDefaulted() && Definition->isCopyOrMoveConstructor() &&
       (Definition->getParent()->isUnion() ||
-       (Definition->isTrivial() && hasFields(Definition->getParent())))) {
+       (Definition->isTrivial() &&
+        isReadByLvalueToRvalueConversion(Definition->getParent())))) {
     LValue RHS;
     RHS.setFrom(Info.Ctx, ArgValues[0]);
     return handleLValueToRValueConversion(
@@ -5750,6 +5808,8 @@ static bool HandleConstructorCall(const Expr *E, const LValue &This,
             getDefaultInitValue(FieldIt->getType());
     }
   }
+
+  EvalObj.finishedConstructingFields();
 
   return Success &&
          EvaluateStmt(Ret, Info, Definition->getBody()) != ESR_Failed &&
@@ -6724,8 +6784,13 @@ public:
     return Error(E);
   }
 
-  bool VisitConstantExpr(const ConstantExpr *E)
-    { return StmtVisitorTy::Visit(E->getSubExpr()); }
+  bool VisitConstantExpr(const ConstantExpr *E) {
+    if (E->hasAPValueResult())
+      return DerivedSuccess(E->getAPValueResult(), E);
+
+    return StmtVisitorTy::Visit(E->getSubExpr());
+  }
+
   bool VisitParenExpr(const ParenExpr *E)
     { return StmtVisitorTy::Visit(E->getSubExpr()); }
   bool VisitUnaryExtension(const UnaryOperator *E)
@@ -6929,10 +6994,8 @@ public:
       } else if (const auto *PDE = dyn_cast<CXXPseudoDestructorExpr>(Callee)) {
         if (!Info.getLangOpts().CPlusPlus2a)
           Info.CCEDiag(PDE, diag::note_constexpr_pseudo_destructor);
-        // FIXME: If pseudo-destructor calls ever start ending the lifetime of
-        // their callee, we should start calling HandleDestruction here.
-        // For now, we just evaluate the object argument and discard it.
-        return EvaluateObjectArgument(Info, PDE->getBase(), ThisVal);
+        return EvaluateObjectArgument(Info, PDE->getBase(), ThisVal) &&
+               HandleDestruction(Info, PDE, ThisVal, PDE->getDestroyedType());
       } else
         return Error(Callee);
       FD = Member;
@@ -8264,6 +8327,12 @@ bool PointerExprEvaluator::VisitCallExpr(const CallExpr *E) {
   return visitNonBuiltinCallExpr(E);
 }
 
+// Determine if T is a character type for which we guarantee that
+// sizeof(T) == 1.
+static bool isOneByteCharacterType(QualType T) {
+  return T->isCharType() || T->isChar8Type();
+}
+
 bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
                                                 unsigned BuiltinOp) {
   switch (BuiltinOp) {
@@ -8414,8 +8483,12 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     }
     // Give up on byte-oriented matching against multibyte elements.
     // FIXME: We can compare the bytes in the correct order.
-    if (IsRawByte && Info.Ctx.getTypeSizeInChars(CharTy) != CharUnits::One())
+    if (IsRawByte && !isOneByteCharacterType(CharTy)) {
+      Info.FFDiag(E, diag::note_constexpr_memchr_unsupported)
+          << (std::string("'") + Info.Ctx.BuiltinInfo.getName(BuiltinOp) + "'")
+          << CharTy;
       return false;
+    }
     // Figure out what value we're actually looking for (after converting to
     // the corresponding unsigned type if necessary).
     uint64_t DesiredVal;
@@ -8531,6 +8604,7 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
     QualType T = Dest.Designator.getType(Info.Ctx);
     QualType SrcT = Src.Designator.getType(Info.Ctx);
     if (!Info.Ctx.hasSameUnqualifiedType(T, SrcT)) {
+      // FIXME: Consider using our bit_cast implementation to support this.
       Info.FFDiag(E, diag::note_constexpr_memcpy_type_pun) << Move << SrcT << T;
       return false;
     }
@@ -8622,6 +8696,10 @@ bool PointerExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
 static bool EvaluateArrayNewInitList(EvalInfo &Info, LValue &This,
                                      APValue &Result, const InitListExpr *ILE,
                                      QualType AllocType);
+static bool EvaluateArrayNewConstructExpr(EvalInfo &Info, LValue &This,
+                                          APValue &Result,
+                                          const CXXConstructExpr *CCE,
+                                          QualType AllocType);
 
 bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
   if (!Info.getLangOpts().CPlusPlus2a)
@@ -8671,6 +8749,7 @@ bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
 
   const Expr *Init = E->getInitializer();
   const InitListExpr *ResizedArrayILE = nullptr;
+  const CXXConstructExpr *ResizedArrayCCE = nullptr;
 
   QualType AllocType = E->getAllocatedType();
   if (Optional<const Expr*> ArraySize = E->getArraySize()) {
@@ -8714,7 +8793,7 @@ bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
     //   -- the new-initializer is a braced-init-list and the number of
     //      array elements for which initializers are provided [...]
     //      exceeds the number of elements to initialize
-    if (Init) {
+    if (Init && !isa<CXXConstructExpr>(Init)) {
       auto *CAT = Info.Ctx.getAsConstantArrayType(Init->getType());
       assert(CAT && "unexpected type for array initializer");
 
@@ -8737,6 +8816,8 @@ bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
       // special handling for this case when we initialize.
       if (InitBound != AllocBound)
         ResizedArrayILE = cast<InitListExpr>(Init);
+    } else if (Init) {
+      ResizedArrayCCE = cast<CXXConstructExpr>(Init);
     }
 
     AllocType = Info.Ctx.getConstantArrayType(AllocType, ArrayBound, nullptr,
@@ -8800,6 +8881,10 @@ bool PointerExprEvaluator::VisitCXXNewExpr(const CXXNewExpr *E) {
   if (ResizedArrayILE) {
     if (!EvaluateArrayNewInitList(Info, Result, *Val, ResizedArrayILE,
                                   AllocType))
+      return false;
+  } else if (ResizedArrayCCE) {
+    if (!EvaluateArrayNewConstructExpr(Info, Result, *Val, ResizedArrayCCE,
+                                       AllocType))
       return false;
   } else if (Init) {
     if (!EvaluateInPlace(*Val, Info, Result, Init))
@@ -9154,6 +9239,8 @@ bool RecordExprEvaluator::VisitInitListExpr(const InitListExpr *E) {
       Success = false;
     }
   }
+
+  EvalObj.finishedConstructingFields();
 
   return Success;
 }
@@ -9624,6 +9711,16 @@ static bool EvaluateArrayNewInitList(EvalInfo &Info, LValue &This,
          "not an array rvalue");
   return ArrayExprEvaluator(Info, This, Result)
       .VisitInitListExpr(ILE, AllocType);
+}
+
+static bool EvaluateArrayNewConstructExpr(EvalInfo &Info, LValue &This,
+                                          APValue &Result,
+                                          const CXXConstructExpr *CCE,
+                                          QualType AllocType) {
+  assert(CCE->isRValue() && CCE->getType()->isArrayType() &&
+         "not an array rvalue");
+  return ArrayExprEvaluator(Info, This, Result)
+      .VisitCXXConstructExpr(CCE, This, &Result, AllocType);
 }
 
 // Return true iff the given array filler may depend on the element index.
@@ -11071,6 +11168,17 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
                 CharTy1, E->getArg(0)->getType()->getPointeeType()) &&
             Info.Ctx.hasSameUnqualifiedType(CharTy1, CharTy2)));
 
+    // For memcmp, allow comparing any arrays of '[[un]signed] char' or
+    // 'char8_t', but no other types.
+    if (IsRawByte &&
+        !(isOneByteCharacterType(CharTy1) && isOneByteCharacterType(CharTy2))) {
+      // FIXME: Consider using our bit_cast implementation to support this.
+      Info.FFDiag(E, diag::note_constexpr_memcmp_unsupported)
+          << (std::string("'") + Info.Ctx.BuiltinInfo.getName(BuiltinOp) + "'")
+          << CharTy1 << CharTy2;
+      return false;
+    }
+
     const auto &ReadCurElems = [&](APValue &Char1, APValue &Char2) {
       return handleLValueToRValueConversion(Info, E, CharTy1, String1, Char1) &&
              handleLValueToRValueConversion(Info, E, CharTy2, String2, Char2) &&
@@ -11080,57 +11188,6 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
       return HandleLValueArrayAdjustment(Info, E, String1, CharTy1, 1) &&
              HandleLValueArrayAdjustment(Info, E, String2, CharTy2, 1);
     };
-
-    if (IsRawByte) {
-      uint64_t BytesRemaining = MaxLength;
-      // Pointers to const void may point to objects of incomplete type.
-      if (CharTy1->isIncompleteType()) {
-        Info.FFDiag(E, diag::note_constexpr_ltor_incomplete_type) << CharTy1;
-        return false;
-      }
-      if (CharTy2->isIncompleteType()) {
-        Info.FFDiag(E, diag::note_constexpr_ltor_incomplete_type) << CharTy2;
-        return false;
-      }
-      uint64_t CharTy1Width{Info.Ctx.getTypeSize(CharTy1)};
-      CharUnits CharTy1Size = Info.Ctx.toCharUnitsFromBits(CharTy1Width);
-      // Give up on comparing between elements with disparate widths.
-      if (CharTy1Size != Info.Ctx.getTypeSizeInChars(CharTy2))
-        return false;
-      uint64_t BytesPerElement = CharTy1Size.getQuantity();
-      assert(BytesRemaining && "BytesRemaining should not be zero: the "
-                               "following loop considers at least one element");
-      while (true) {
-        APValue Char1, Char2;
-        if (!ReadCurElems(Char1, Char2))
-          return false;
-        // We have compatible in-memory widths, but a possible type and
-        // (for `bool`) internal representation mismatch.
-        // Assuming two's complement representation, including 0 for `false` and
-        // 1 for `true`, we can check an appropriate number of elements for
-        // equality even if they are not byte-sized.
-        APSInt Char1InMem = Char1.getInt().extOrTrunc(CharTy1Width);
-        APSInt Char2InMem = Char2.getInt().extOrTrunc(CharTy1Width);
-        if (Char1InMem.ne(Char2InMem)) {
-          // If the elements are byte-sized, then we can produce a three-way
-          // comparison result in a straightforward manner.
-          if (BytesPerElement == 1u) {
-            // memcmp always compares unsigned chars.
-            return Success(Char1InMem.ult(Char2InMem) ? -1 : 1, E);
-          }
-          // The result is byte-order sensitive, and we have multibyte elements.
-          // FIXME: We can compare the remaining bytes in the correct order.
-          return false;
-        }
-        if (!AdvanceElems())
-          return false;
-        if (BytesRemaining <= BytesPerElement)
-          break;
-        BytesRemaining -= BytesPerElement;
-      }
-      // Enough elements are equal to account for the memcmp limit.
-      return Success(0, E);
-    }
 
     bool StopAtNull =
         (BuiltinOp != Builtin::BImemcmp && BuiltinOp != Builtin::BIbcmp &&
@@ -11149,7 +11206,7 @@ bool IntExprEvaluator::VisitBuiltinCallExpr(const CallExpr *E,
       APValue Char1, Char2;
       if (!ReadCurElems(Char1, Char2))
         return false;
-      if (Char1.getInt() != Char2.getInt()) {
+      if (Char1.getInt().ne(Char2.getInt())) {
         if (IsWide) // wmemcmp compares with wchar_t signedness.
           return Success(Char1.getInt() < Char2.getInt() ? -1 : 1, E);
         // memcmp always compares unsigned chars.
@@ -14102,6 +14159,8 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
   case Expr::StringLiteralClass:
   case Expr::ArraySubscriptExprClass:
   case Expr::OMPArraySectionExprClass:
+  case Expr::OMPArrayShapingExprClass:
+  case Expr::OMPIteratorExprClass:
   case Expr::MemberExprClass:
   case Expr::CompoundAssignOperatorClass:
   case Expr::CompoundLiteralExprClass:
@@ -14132,6 +14191,7 @@ static ICEDiag CheckICE(const Expr* E, const ASTContext &Ctx) {
   case Expr::CXXPseudoDestructorExprClass:
   case Expr::UnresolvedLookupExprClass:
   case Expr::TypoExprClass:
+  case Expr::RecoveryExprClass:
   case Expr::DependentScopeDeclRefExprClass:
   case Expr::CXXConstructExprClass:
   case Expr::CXXInheritedCtorInitExprClass:
@@ -14656,6 +14716,15 @@ bool Expr::isPotentialConstantExpr(const FunctionDecl *FD,
   if (FD->isDependentContext())
     return true;
 
+  // Bail out if a constexpr constructor has an initializer that contains an
+  // error. We deliberately don't produce a diagnostic, as we have produced a
+  // relevant diagnostic when parsing the error initializer.
+  if (const auto *Ctor = dyn_cast<CXXConstructorDecl>(FD)) {
+    for (const auto *InitExpr : Ctor->inits()) {
+      if (InitExpr->getInit() && InitExpr->getInit()->containsErrors())
+        return false;
+    }
+  }
   Expr::EvalStatus Status;
   Status.Diag = &Diags;
 

@@ -95,6 +95,7 @@ bool link(ArrayRef<const char *> args, bool canExitEarly, raw_ostream &stdoutOS,
   bitcodeFiles.clear();
   objectFiles.clear();
   sharedFiles.clear();
+  backwardReferences.clear();
 
   config = make<Configuration>();
   driver = make<LinkerDriver>();
@@ -531,17 +532,14 @@ void LinkerDriver::main(ArrayRef<const char *> argsArr) {
   }
 
   if (config->timeTraceEnabled) {
-    // Write the result of the time trace profiler.
-    std::string path = args.getLastArgValue(OPT_time_trace_file_eq).str();
-    if (path.empty())
-      path = (config->outputFile + ".time-trace").str();
-    std::error_code ec;
-    raw_fd_ostream os(path, ec, sys::fs::OF_Text);
-    if (ec) {
-      error("cannot open " + path + ": " + ec.message());
+    if (auto E = timeTraceProfilerWrite(args.getLastArgValue(OPT_time_trace_file_eq).str(),
+                                        config->outputFile)) {
+      handleAllErrors(std::move(E), [&](const StringError &SE) {
+        error(SE.getMessage());
+      });
       return;
     }
-    timeTraceProfilerWrite(os);
+
     timeTraceProfilerCleanup();
   }
 }
@@ -864,7 +862,6 @@ static void readConfigs(opt::InputArgList &args) {
       args.hasFlag(OPT_fatal_warnings, OPT_no_fatal_warnings, false);
   errorHandler().vsDiagnostics =
       args.hasArg(OPT_visual_studio_diagnostics_format, false);
-  threadsEnabled = args.hasFlag(OPT_threads, OPT_no_threads, true);
 
   config->allowMultipleDefinition =
       args.hasFlag(OPT_allow_multiple_definition,
@@ -885,7 +882,6 @@ static void readConfigs(opt::InputArgList &args) {
                                       !args.hasArg(OPT_relocatable));
   config->optimizeBBJumps =
       args.hasFlag(OPT_optimize_bb_jumps, OPT_no_optimize_bb_jumps, false);
-
   config->demangle = args.hasFlag(OPT_demangle, OPT_no_demangle, true);
   config->dependentLibraries = args.hasFlag(OPT_dependent_libraries, OPT_no_dependent_libraries, true);
   config->disableVerify = args.hasArg(OPT_disable_verify);
@@ -1002,7 +998,6 @@ static void readConfigs(opt::InputArgList &args) {
 
   // Parse Propeller flags.
   auto propellerOpts = args::getStrings(args, OPT_propeller_opt);
-  bool splitFuncsExplicit = false;
   for (auto &propellerOpt : propellerOpts) {
     if (propellerOpt == "reorder-ip") {
       config->propellerReorderIP = true;
@@ -1016,30 +1011,25 @@ static void readConfigs(opt::InputArgList &args) {
       config->propellerReorderBlocks = false;
     } else if (propellerOpt == "split-funcs") {
       config->propellerSplitFuncs = true;
-      splitFuncsExplicit = true;
     } else if (propellerOpt == "no-split-funcs") {
       config->propellerSplitFuncs = false;
+    } else if (propellerOpt == "reorder-blocks-random") {
+      config->propellerReorderBlocksRandom = true;
     } else
       error("unknown propeller option: " + propellerOpt);
   }
 
-  if (!config->propeller.empty() && !config->propellerReorderBlocks) {
-    if (splitFuncsExplicit) {
-      error("propeller: Inconsistent combination of propeller optimizations"
-            " 'split-funcs' and 'no-reorder-blocks'.");
-    } else {
-      warn("propeller: no-reorder-blocks implicitly sets no-split-funcs.");
-      config->propellerSplitFuncs = false;
-    }
-  }
+  if (config->propellerReorderBlocksRandom)
+    config->propellerReorderBlocks = false;
 
   config->rpath = getRpath(args);
   config->relocatable = args.hasArg(OPT_relocatable);
   config->saveTemps = args.hasArg(OPT_save_temps);
+  if (args.hasArg(OPT_shuffle_sections))
+    config->shuffleSectionSeed = args::getInteger(args, OPT_shuffle_sections, 0);
   config->searchPaths = args::getStrings(args, OPT_library_path);
   config->sectionStartMap = getSectionStartMap(args);
   config->shared = args.hasArg(OPT_shared);
-
   config->singleRoRx = args.hasArg(OPT_no_rosegment);
   config->soName = args.getLastArgValue(OPT_soname);
   config->sortSection = getSortSection(args);
@@ -1056,7 +1046,6 @@ static void readConfigs(opt::InputArgList &args) {
   config->thinLTOIndexOnly = args.hasArg(OPT_thinlto_index_only) ||
                              args.hasArg(OPT_thinlto_index_only_eq);
   config->thinLTOIndexOnlyArg = args.getLastArgValue(OPT_thinlto_index_only_eq);
-  config->thinLTOJobs = args::getInteger(args, OPT_thinlto_jobs, -1u);
   config->thinLTOObjectSuffixReplace =
       getOldNewOptions(args, OPT_thinlto_object_suffix_replace_eq);
   config->thinLTOPrefixReplace =
@@ -1068,6 +1057,7 @@ static void readConfigs(opt::InputArgList &args) {
   config->undefined = args::getStrings(args, OPT_undefined);
   config->undefinedVersion =
       args.hasFlag(OPT_undefined_version, OPT_no_undefined_version, true);
+  config->unique = args.hasArg(OPT_unique);
   config->useAndroidRelrTags = args.hasFlag(
       OPT_use_android_relr_tags, OPT_no_use_android_relr_tags, false);
   config->unresolvedSymbols = getUnresolvedSymbolPolicy(args);
@@ -1117,12 +1107,26 @@ static void readConfigs(opt::InputArgList &args) {
   for (auto *arg : args.filtered(OPT_mllvm))
     parseClangOption(arg->getValue(), arg->getSpelling());
 
+  // --threads= takes a positive integer and provides the default value for
+  // --thinlto-jobs=.
+  if (auto *arg = args.getLastArg(OPT_threads)) {
+    StringRef v(arg->getValue());
+    unsigned threads = 0;
+    if (!llvm::to_integer(v, threads, 0) || threads == 0)
+      error(arg->getSpelling() + ": expected a positive integer, but got '" +
+            arg->getValue() + "'");
+    parallel::strategy = hardware_concurrency(threads);
+    config->thinLTOJobs = v;
+  }
+  if (auto *arg = args.getLastArg(OPT_thinlto_jobs))
+    config->thinLTOJobs = arg->getValue();
+
   if (config->ltoo > 3)
     error("invalid optimization level for LTO: " + Twine(config->ltoo));
   if (config->ltoPartitions == 0)
     error("--lto-partitions: number of threads must be > 0");
-  if (config->thinLTOJobs == 0)
-    error("--thinlto-jobs: number of threads must be > 0");
+  if (!get_threadpool_strategy(config->thinLTOJobs))
+    error("--thinlto-jobs: invalid job count: " + config->thinLTOJobs);
 
   if (config->splitStackAdjustSize < 0)
     error("--split-stack-adjust-size: size must be >= 0");
@@ -1509,6 +1513,10 @@ static void handleUndefined(Symbol *sym) {
   // eliminate it. Mark the symbol as "used" to prevent it.
   sym->isUsedInRegularObj = true;
 
+  // GNU linkers allow -u foo -ldef -lref. We should not treat it as a backward
+  // reference.
+  backwardReferences.erase(sym);
+
   if (sym->isLazy())
     sym->fetch();
 }
@@ -1817,7 +1825,8 @@ template <class ELFT> static uint32_t getAndFeatures() {
   for (InputFile *f : objectFiles) {
     uint32_t features = cast<ObjFile<ELFT>>(f)->andFeatures;
     if (config->zForceBti && !(features & GNU_PROPERTY_AARCH64_FEATURE_1_BTI)) {
-      warn(toString(f) + ": -z force-bti: file does not have BTI property");
+      warn(toString(f) + ": -z force-bti: file does not have "
+                         "GNU_PROPERTY_AARCH64_FEATURE_1_BTI property");
       features |= GNU_PROPERTY_AARCH64_FEATURE_1_BTI;
     } else if (config->zForceIbt &&
                !(features & GNU_PROPERTY_X86_FEATURE_1_IBT)) {
@@ -1825,13 +1834,14 @@ template <class ELFT> static uint32_t getAndFeatures() {
                          "GNU_PROPERTY_X86_FEATURE_1_IBT property");
       features |= GNU_PROPERTY_X86_FEATURE_1_IBT;
     }
+    if (config->zPacPlt && !(features & GNU_PROPERTY_AARCH64_FEATURE_1_PAC)) {
+      warn(toString(f) + ": -z pac-plt: file does not have "
+                         "GNU_PROPERTY_AARCH64_FEATURE_1_PAC property");
+      features |= GNU_PROPERTY_AARCH64_FEATURE_1_PAC;
+    }
     ret &= features;
   }
 
-  // Force enable pointer authentication Plt, we don't warn in this case as
-  // this does not require support in the object for correctness.
-  if (config->zPacPlt)
-    ret |= GNU_PROPERTY_AARCH64_FEATURE_1_PAC;
   // Force enable Shadow Stack.
   if (config->zShstk)
     ret |= GNU_PROPERTY_X86_FEATURE_1_SHSTK;
@@ -1981,6 +1991,9 @@ template <class ELFT> void LinkerDriver::link(opt::InputArgList &args) {
   // With this the symbol table should be complete. After this, no new names
   // except a few linker-synthesized ones will be added to the symbol table.
   compileBitcodeFiles<ELFT>();
+
+  // Symbol resolution finished. Report backward reference problems.
+  reportBackrefs();
   if (errorCount())
     return;
 

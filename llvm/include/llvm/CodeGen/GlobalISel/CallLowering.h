@@ -84,7 +84,7 @@ public:
 
     /// Valid if the call has a swifterror inout parameter, and contains the
     /// vreg that the swifterror should be copied into after the call.
-    Register SwiftErrorVReg = 0;
+    Register SwiftErrorVReg;
 
     MDNode *KnownCallees = nullptr;
 
@@ -328,7 +328,7 @@ public:
   /// range of an immediate jump.
   ///
   /// \return true if the lowering succeeded, false otherwise.
-  bool lowerCall(MachineIRBuilder &MIRBuilder, ImmutableCallSite CS,
+  bool lowerCall(MachineIRBuilder &MIRBuilder, const CallBase &Call,
                  ArrayRef<Register> ResRegs,
                  ArrayRef<ArrayRef<Register>> ArgRegs, Register SwiftErrorVReg,
                  std::function<unsigned()> GetCalleeReg) const;

@@ -92,6 +92,12 @@ public:
   /// is that of the flag: `-forget-scev-loop-unroll`.
   bool ForgetAllSCEVInLoopUnroll;
 
+  /// Tuning option to enable/disable coroutine intrinsic lowering. Its default
+  /// value is false. Frontends such as Clang may enable this conditionally. For
+  /// example, Clang enables this option if the flags `-std=c++2a` or above, or
+  /// `-fcoroutines-ts`, have been specified.
+  bool Coroutines;
+
   /// Tuning option to cap the number of calls to retrive clobbering accesses in
   /// MemorySSA, in LICM.
   unsigned LicmMssaOptCap;
@@ -99,6 +105,10 @@ public:
   /// Tuning option to disable promotion to scalars in LICM with MemorySSA, if
   /// the number of access is too large.
   unsigned LicmMssaNoAccForPromotionCap;
+
+  /// Tuning option to enable/disable call graph profile. Its default value is
+  /// that of the flag: `-enable-npm-call-graph-profile`.
+  bool CallGraphProfile;
 };
 
 /// This class provides access to building LLVM's passes.

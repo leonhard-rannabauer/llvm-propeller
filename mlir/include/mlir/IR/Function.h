@@ -13,11 +13,12 @@
 #ifndef MLIR_IR_FUNCTION_H
 #define MLIR_IR_FUNCTION_H
 
-#include "mlir/Analysis/CallInterfaces.h"
 #include "mlir/IR/Block.h"
 #include "mlir/IR/FunctionSupport.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/CallInterfaces.h"
+#include "llvm/Support/PointerLikeTypeTraits.h"
 
 namespace mlir {
 //===--------------------------------------------------------------------===//
@@ -29,9 +30,11 @@ namespace mlir {
 /// implicitly capture global values, and all external references must use
 /// Function arguments or attributes that establish a symbolic connection(e.g.
 /// symbols referenced by name via a string attribute).
-class FuncOp : public Op<FuncOp, OpTrait::ZeroOperands, OpTrait::ZeroResult,
-                         OpTrait::IsIsolatedFromAbove, OpTrait::Symbol,
-                         OpTrait::FunctionLike, CallableOpInterface::Trait> {
+class FuncOp
+    : public Op<FuncOp, OpTrait::ZeroOperands, OpTrait::ZeroResult,
+                OpTrait::IsIsolatedFromAbove, OpTrait::Symbol,
+                OpTrait::FunctionLike, OpTrait::AutomaticAllocationScope,
+                CallableOpInterface::Trait> {
 public:
   using Op::Op;
   using Op::print;

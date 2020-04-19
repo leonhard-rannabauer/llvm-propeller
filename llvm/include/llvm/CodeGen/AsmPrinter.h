@@ -15,6 +15,7 @@
 #ifndef LLVM_CODEGEN_ASMPRINTER_H
 #define LLVM_CODEGEN_ASMPRINTER_H
 
+#include "llvm/ADT/IndexedMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -132,6 +133,11 @@ public:
   /// default, this is equal to CurrentFnSym.
   MCSymbol *CurrentFnSymForSize = nullptr;
 
+  struct MBBSectionRange {
+    MCSymbol *BeginLabel, *EndLabel;
+  };
+  IndexedMap<MBBSectionRange, MBBSectionID::ToIndexFunctor> MBBSectionRanges;
+
   /// Map global GOT equivalent MCSymbols to GlobalVariables and keep track of
   /// its number of uses by other globals.
   using GOTEquivUsePair = std::pair<const GlobalVariable *, unsigned>;
@@ -141,6 +147,10 @@ private:
   MCSymbol *CurrentFnEnd = nullptr;
   MCSymbol *CurExceptionSym = nullptr;
   DenseMap<const MachineBasicBlock *, MCSymbol *> ExceptionSymbols;
+
+  // The symbol used to represent the start of the current BB section of the
+  // function. This is used to calculate the size of the BB section.
+  MCSymbol *CurrentSectionBeginSym = nullptr;
 
   // The garbage collection metadata printer table.
   void *GCMetadataPrinters = nullptr; // Really a DenseMap.

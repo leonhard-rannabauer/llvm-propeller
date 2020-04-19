@@ -887,6 +887,8 @@ Function *CodeExtractor::constructFunction(const ValueSet &inputs,
       case Attribute::ZExt:
       case Attribute::ImmArg:
       case Attribute::EndAttrKinds:
+      case Attribute::EmptyKey:
+      case Attribute::TombstoneKey:
         continue;
       // Those attributes should be safe to propagate to the extracted function.
       case Attribute::AlwaysInline:
@@ -1167,9 +1169,9 @@ CallInst *CodeExtractor::emitCallAndSwitchStatement(Function *newFunction,
       Output = ReloadOutputs[i];
     }
     LoadInst *load = new LoadInst(outputs[i]->getType(), Output,
-                                  outputs[i]->getName() + ".reload");
+                                  outputs[i]->getName() + ".reload",
+                                  codeReplacer);
     Reloads.push_back(load);
-    codeReplacer->getInstList().push_back(load);
     std::vector<User *> Users(outputs[i]->user_begin(), outputs[i]->user_end());
     for (unsigned u = 0, e = Users.size(); u != e; ++u) {
       Instruction *inst = cast<Instruction>(Users[u]);

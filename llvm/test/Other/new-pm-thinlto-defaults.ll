@@ -79,8 +79,6 @@
 ; CHECK-O-NEXT: Running pass: LowerExpectIntrinsicPass
 ; CHECK-O3-NEXT: Running pass: CallSiteSplittingPass
 ; CHECK-O-NEXT: Finished llvm::Function pass manager run.
-; CHECK-O-NEXT: Running pass: AttributorPass
-; CHECK-POSTLINK-O-NEXT: Running pass: LowerTypeTestsPass
 ; CHECK-O-NEXT: Running pass: IPSCCPPass
 ; CHECK-O-NEXT: Running pass: CalledValuePropagationPass
 ; CHECK-O-NEXT: Running pass: GlobalOptPass
@@ -107,7 +105,6 @@
 ; CHECK-O-NEXT: Running analysis: OuterAnalysisManagerProxy<{{.*}}LazyCallGraph::SCC{{.*}}>
 ; CHECK-O-NEXT: Starting CGSCC pass manager run.
 ; CHECK-O-NEXT: Running pass: InlinerPass
-; CHECK-O-NEXT: Running pass: AttributorCGSCCPass
 ; CHECK-O-NEXT: Running pass: PostOrderFunctionAttrsPass
 ; CHECK-O3-NEXT: Running pass: ArgumentPromotionPass
 ; CHECK-O2-NEXT: Running pass: OpenMPOptPass on (foo)
@@ -218,20 +215,19 @@
 ; CHECK-POSTLINK-O-NEXT: Running pass: LCSSAPass
 ; CHECK-POSTLINK-O-NEXT: Finished llvm::Function pass manager run
 ; CHECK-POSTLINK-O-NEXT: Running pass: LoopDistributePass
+; CHECK-POSTLINK-O-NEXT: Running pass: InjectTLIMappings
 ; CHECK-POSTLINK-O-NEXT: Running pass: LoopVectorizePass
 ; CHECK-POSTLINK-O-NEXT: Running analysis: BlockFrequencyAnalysis
 ; CHECK-POSTLINK-O-NEXT: Running analysis: BranchProbabilityAnalysis
+; CHECK-POSTLINK-O-NEXT: Running pass: VectorCombinePass
+; CHECK-POSTLINK-O-NEXT: Running pass: EarlyCSEPass
 ; CHECK-POSTLINK-O-NEXT: Running pass: LoopLoadEliminationPass
 ; CHECK-POSTLINK-O-NEXT: Running analysis: LoopAccessAnalysis
-; CHECK-POSTLINK-O-NEXT: Running pass: VectorCombinePass
 ; CHECK-POSTLINK-O-NEXT: Running pass: InstCombinePass
 ; CHECK-POSTLINK-O-NEXT: Running pass: SimplifyCFGPass
 ; CHECK-POSTLINK-O2-NEXT: Running pass: SLPVectorizerPass
 ; CHECK-POSTLINK-O3-NEXT: Running pass: SLPVectorizerPass
 ; CHECK-POSTLINK-Os-NEXT: Running pass: SLPVectorizerPass
-; CHECK-POSTLINK-O2-NEXT: Running pass: VectorCombinePass
-; CHECK-POSTLINK-O3-NEXT: Running pass: VectorCombinePass
-; CHECK-POSTLINK-Os-NEXT: Running pass: VectorCombinePass
 ; CHECK-POSTLINK-O-NEXT: Running pass: InstCombinePass
 ; CHECK-POSTLINK-O-NEXT: Running pass: LoopUnrollPass
 ; CHECK-POSTLINK-O-NEXT: Running pass: WarnMissedTransformationsPass

@@ -351,8 +351,6 @@ void DwarfCompileUnit::initStmtList() {
   if (CUNode->isDebugDirectivesOnly())
     return;
 
-  // Define start line table label for each Compile Unit.
-  MCSymbol *LineTableStartSym;
   const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
   if (DD->useSectionsAsReferences()) {
     LineTableStartSym = TLOF.getDwarfLineSection()->getBeginSymbol();
@@ -366,13 +364,14 @@ void DwarfCompileUnit::initStmtList() {
   // left in the skeleton CU and so not included.
   // The line table entries are not always emitted in assembly, so it
   // is not okay to use line_table_start here.
-  StmtListValue =
       addSectionLabel(getUnitDie(), dwarf::DW_AT_stmt_list, LineTableStartSym,
                       TLOF.getDwarfLineSection()->getBeginSymbol());
 }
 
 void DwarfCompileUnit::applyStmtList(DIE &D) {
-  D.addValue(DIEValueAllocator, *StmtListValue);
+  const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
+  addSectionLabel(D, dwarf::DW_AT_stmt_list, LineTableStartSym,
+                  TLOF.getDwarfLineSection()->getBeginSymbol());
 }
 
 void DwarfCompileUnit::attachLowHighPC(DIE &D, const MCSymbol *Begin,
@@ -395,20 +394,21 @@ void DwarfCompileUnit::attachLowHighPC(DIE &D, const MCSymbol *Begin,
 DIE &DwarfCompileUnit::updateSubprogramScopeDIE(const DISubprogram *SP) {
   DIE *SPDie = getOrCreateSubprogramDIE(SP, includeMinimalInlineScopes());
 
-  if (!Asm->MF->getBBSections())
+  if (!Asm->MF->hasBBSections())
     attachLowHighPC(*SPDie, Asm->getFunctionBegin(), Asm->getFunctionEnd());
   else {
     SmallVector<RangeSpan, 2> BB_List;
     BB_List.push_back({Asm->getFunctionBegin(), Asm->getFunctionEnd()});
-    // If basic block sections are on, only the entry BB and exception
-    // handling BBs will be in the [getFunctionBegin(), getFunctionEnd()]
-    // range. Ranges for the other BBs have to be emitted separately.
+    // If basic block sections are on, the [getFunctionBegin(),
+    // getFunctionEnd()] range will include all BBs which are in the same
+    // section as the entry block. Ranges for the other BBs have to be emitted
+    // separately.
     for (auto &MBB : *Asm->MF) {
-      if (!MBB.pred_empty() && MBB.isBeginSection()) {
-        BB_List.push_back(
-            {MBB.getSymbol(), MBB.getSectionEndMBB()->getEndMCSymbol()});
-      }
+      if (&MBB != &Asm->MF->front() && MBB.isBeginSection())
+        BB_List.push_back({MBB.getSymbol(),
+                           Asm->MBBSectionRanges[MBB.getSectionID()].EndLabel});
     }
+
     attachRangesOrLowHighPC(*SPDie, BB_List);
   }
   if (DD->useAppleExtensionAttributes() &&
@@ -512,7 +512,6 @@ void DwarfCompileUnit::constructScopeDIE(
 
 void DwarfCompileUnit::addScopeRangeList(DIE &ScopeDIE,
                                          SmallVector<RangeSpan, 2> Range) {
-
   HasRangeLists = true;
 
   // Add the range list to the set of ranges to be emitted.
@@ -564,29 +563,24 @@ void DwarfCompileUnit::attachRangesOrLowHighPC(
     const auto *BeginMBB = R.first->getParent();
     const auto *EndMBB = R.second->getParent();
 
-    if (BeginMBB->sameSection(EndMBB) ||
-        Asm->MF->getBBSections() == llvm::BasicBlockSection::None) {
-      // Without basic block sections, there is just one continuous range.
-      // The same holds if EndMBB is in the initial non-unique-section BB range.
+    if (BeginMBB->sameSection(EndMBB)) {
+      // If begin and end share their section, there is just one continuous
+      // range.
       List.push_back({BeginLabel, EndLabel});
       continue;
     }
 
-    assert(!BeginMBB->sameSection(EndMBB) &&
-           "BeginMBB and EndMBB are in the same section!");
-    const auto *MBBInSection = BeginMBB->getSectionEndMBB();
-    List.push_back({BeginLabel, MBBInSection->getEndMCSymbol()});
-    MBBInSection = MBBInSection->getNextNode();
-    while (!MBBInSection->sameSection(EndMBB)) {
-      assert(MBBInSection->isBeginSection() &&
-             "This should start a new section.");
-      List.push_back({MBBInSection->getSymbol(),
-                      MBBInSection->getSectionEndMBB()->getEndMCSymbol()});
-      MBBInSection = MBBInSection->getSectionEndMBB()->getNextNode();
-    }
-
-    assert(MBBInSection->sameSection(EndMBB));
-    List.push_back({MBBInSection->getSymbol(), EndLabel});
+    const auto *MBB = BeginMBB;
+    do {
+      if (MBB->sameSection(EndMBB) || MBB->isEndSection()) {
+        auto MBBSectionRange = Asm->MBBSectionRanges[MBB->getSectionID()];
+        List.push_back(
+            {MBB->sameSection(BeginMBB) ? BeginLabel
+                                        : MBBSectionRange.BeginLabel,
+             MBB->sameSection(EndMBB) ? EndLabel : MBBSectionRange.EndLabel});
+      }
+      MBB = MBB->getNextNode();
+    } while (!MBB->sameSection(EndMBB));
   }
   attachRangesOrLowHighPC(Die, std::move(List));
 }
@@ -718,7 +712,7 @@ DIE *DwarfCompileUnit::constructVariableDIEImpl(const DbgVariable &DV,
   DIELoc *Loc = new (DIEValueAllocator) DIELoc;
   DIEDwarfExpression DwarfExpr(*Asm, *this, *Loc);
   for (auto &Fragment : DV.getFrameIndexExprs()) {
-    unsigned FrameReg = 0;
+    Register FrameReg;
     const DIExpression *Expr = Fragment.Expr;
     const TargetFrameLowering *TFI = Asm->MF->getSubtarget().getFrameLowering();
     int Offset = TFI->getFrameIndexReference(*Asm->MF, Fragment.FI, FrameReg);
@@ -968,13 +962,12 @@ void DwarfCompileUnit::constructAbstractSubprogramScopeDIE(
     ContextCU->addDIEEntry(*AbsDef, dwarf::DW_AT_object_pointer, *ObjectPointer);
 }
 
-/// Whether to use the GNU analog for a DWARF5 tag, attribute, or location atom.
-static bool useGNUAnalogForDwarf5Feature(DwarfDebug *DD) {
+bool DwarfCompileUnit::useGNUAnalogForDwarf5Feature() const {
   return DD->getDwarfVersion() == 4 && DD->tuneForGDB();
 }
 
 dwarf::Tag DwarfCompileUnit::getDwarf5OrGNUTag(dwarf::Tag Tag) const {
-  if (!useGNUAnalogForDwarf5Feature(DD))
+  if (!useGNUAnalogForDwarf5Feature())
     return Tag;
   switch (Tag) {
   case dwarf::DW_TAG_call_site:
@@ -988,7 +981,7 @@ dwarf::Tag DwarfCompileUnit::getDwarf5OrGNUTag(dwarf::Tag Tag) const {
 
 dwarf::Attribute
 DwarfCompileUnit::getDwarf5OrGNUAttr(dwarf::Attribute Attr) const {
-  if (!useGNUAnalogForDwarf5Feature(DD))
+  if (!useGNUAnalogForDwarf5Feature())
     return Attr;
   switch (Attr) {
   case dwarf::DW_AT_call_all_calls:
@@ -1010,7 +1003,7 @@ DwarfCompileUnit::getDwarf5OrGNUAttr(dwarf::Attribute Attr) const {
 
 dwarf::LocationAtom
 DwarfCompileUnit::getDwarf5OrGNULocationAtom(dwarf::LocationAtom Loc) const {
-  if (!useGNUAnalogForDwarf5Feature(DD))
+  if (!useGNUAnalogForDwarf5Feature())
     return Loc;
   switch (Loc) {
   case dwarf::DW_OP_entry_value:
@@ -1024,6 +1017,7 @@ DIE &DwarfCompileUnit::constructCallSiteEntryDIE(DIE &ScopeDIE,
                                                  DIE *CalleeDIE,
                                                  bool IsTail,
                                                  const MCSymbol *PCAddr,
+                                                 const MCSymbol *CallAddr,
                                                  unsigned CallReg) {
   // Insert a call site entry DIE within ScopeDIE.
   DIE &CallSiteDIE = createAndAddDIE(getDwarf5OrGNUTag(dwarf::DW_TAG_call_site),
@@ -1039,16 +1033,33 @@ DIE &DwarfCompileUnit::constructCallSiteEntryDIE(DIE &ScopeDIE,
                 *CalleeDIE);
   }
 
-  if (IsTail)
+  if (IsTail) {
     // Attach DW_AT_call_tail_call to tail calls for standards compliance.
     addFlag(CallSiteDIE, getDwarf5OrGNUAttr(dwarf::DW_AT_call_tail_call));
+
+    // Attach the address of the branch instruction to allow the debugger to
+    // show where the tail call occurred. This attribute has no GNU analog.
+    //
+    // GDB works backwards from non-standard usage of DW_AT_low_pc (in DWARF4
+    // mode -- equivalently, in DWARF5 mode, DW_AT_call_return_pc) at tail-call
+    // site entries to figure out the PC of tail-calling branch instructions.
+    // This means it doesn't need the compiler to emit DW_AT_call_pc, so we
+    // don't emit it here.
+    //
+    // There's no need to tie non-GDB debuggers to this non-standardness, as it
+    // adds unnecessary complexity to the debugger. For non-GDB debuggers, emit
+    // the standard DW_AT_call_pc info.
+    if (!useGNUAnalogForDwarf5Feature())
+      addLabelAddress(CallSiteDIE, dwarf::DW_AT_call_pc, CallAddr);
+  }
 
   // Attach the return PC to allow the debugger to disambiguate call paths
   // from one function to another.
   //
   // The return PC is only really needed when the call /isn't/ a tail call, but
-  // for some reason GDB always expects it.
-  if (!IsTail || DD->tuneForGDB()) {
+  // GDB expects it in DWARF4 mode, even for tail calls (see the comment above
+  // the DW_AT_call_pc emission logic for an explanation).
+  if (!IsTail || useGNUAnalogForDwarf5Feature()) {
     assert(PCAddr && "Missing return PC information for a call");
     addLabelAddress(CallSiteDIE,
                     getDwarf5OrGNUAttr(dwarf::DW_AT_call_return_pc), PCAddr);

@@ -105,6 +105,11 @@ protected:
   Optional<DestSourcePair>
   isCopyInstrImpl(const MachineInstr &MI) const override;
 
+  /// Specialization of \ref TargetInstrInfo::describeLoadedValue, used to
+  /// enhance debug entry value descriptions for ARM targets.
+  Optional<ParamLoadedValue> describeLoadedValue(const MachineInstr &MI,
+                                                 Register Reg) const override;
+
 public:
   // Return whether the target has an explicit NOP encoding.
   bool hasNOP() const;
@@ -145,6 +150,11 @@ public:
 
   // Predication support.
   bool isPredicated(const MachineInstr &MI) const override;
+
+  // MIR printer helper function to annotate Operands with a comment.
+  std::string createMIROperandComment(const MachineInstr &MI,
+                                      const MachineOperand &Op,
+                                      unsigned OpIdx) const override;
 
   ARMCC::CondCodes getPredicate(const MachineInstr &MI) const {
     int PIdx = MI.findFirstPredOperandIdx();
@@ -222,7 +232,7 @@ public:
   bool shouldSink(const MachineInstr &MI) const override;
 
   void reMaterialize(MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
-                     unsigned DestReg, unsigned SubIdx,
+                     Register DestReg, unsigned SubIdx,
                      const MachineInstr &Orig,
                      const TargetRegisterInfo &TRI) const override;
 
@@ -286,16 +296,16 @@ public:
   /// in SrcReg and SrcReg2 if having two register operands, and the value it
   /// compares against in CmpValue. Return true if the comparison instruction
   /// can be analyzed.
-  bool analyzeCompare(const MachineInstr &MI, unsigned &SrcReg,
-                      unsigned &SrcReg2, int &CmpMask,
+  bool analyzeCompare(const MachineInstr &MI, Register &SrcReg,
+                      Register &SrcReg2, int &CmpMask,
                       int &CmpValue) const override;
 
   /// optimizeCompareInstr - Convert the instruction to set the zero flag so
   /// that we can remove a "comparison with zero"; Remove a redundant CMP
   /// instruction if the flags can be updated in the same way by an earlier
   /// instruction such as SUB.
-  bool optimizeCompareInstr(MachineInstr &CmpInstr, unsigned SrcReg,
-                            unsigned SrcReg2, int CmpMask, int CmpValue,
+  bool optimizeCompareInstr(MachineInstr &CmpInstr, Register SrcReg,
+                            Register SrcReg2, int CmpMask, int CmpValue,
                             const MachineRegisterInfo *MRI) const override;
 
   bool analyzeSelect(const MachineInstr &MI,
@@ -308,7 +318,7 @@ public:
 
   /// FoldImmediate - 'Reg' is known to be defined by a move immediate
   /// instruction, try to fold the immediate into the use instruction.
-  bool FoldImmediate(MachineInstr &UseMI, MachineInstr &DefMI, unsigned Reg,
+  bool FoldImmediate(MachineInstr &UseMI, MachineInstr &DefMI, Register Reg,
                      MachineRegisterInfo *MRI) const override;
 
   unsigned getNumMicroOps(const InstrItineraryData *ItinData,
@@ -403,7 +413,7 @@ private:
 
   /// Identify instructions that can be folded into a MOVCC instruction, and
   /// return the defining instruction.
-  MachineInstr *canFoldIntoMOVCC(unsigned Reg, const MachineRegisterInfo &MRI,
+  MachineInstr *canFoldIntoMOVCC(Register Reg, const MachineRegisterInfo &MRI,
                                  const TargetInstrInfo *TII) const;
 
 private:
@@ -493,16 +503,16 @@ bool isUncondBranchOpcode(int Opc) {
 // the ArmARM.
 
 
-inline static unsigned getARMVPTBlockMask(unsigned NumInsts) {
+inline static ARM::PredBlockMask getARMVPTBlockMask(unsigned NumInsts) {
   switch (NumInsts) {
   case 1:
-    return ARMVCC::T;
+    return ARM::PredBlockMask::T;
   case 2:
-    return ARMVCC::TT;
+    return ARM::PredBlockMask::TT;
   case 3:
-    return ARMVCC::TTT;
+    return ARM::PredBlockMask::TTT;
   case 4:
-    return ARMVCC::TTTT;
+    return ARM::PredBlockMask::TTTT;
   default:
     break;
   };
@@ -691,7 +701,7 @@ static inline bool isValidCoprocessorNumber(unsigned Num,
 /// getInstrPredicate - If instruction is predicated, returns its predicate
 /// condition, otherwise returns AL. It also returns the condition code
 /// register by reference.
-ARMCC::CondCodes getInstrPredicate(const MachineInstr &MI, unsigned &PredReg);
+ARMCC::CondCodes getInstrPredicate(const MachineInstr &MI, Register &PredReg);
 
 unsigned getMatchingCondBranchOpcode(unsigned Opc);
 
@@ -705,21 +715,21 @@ unsigned convertAddSubFlagsOpcode(unsigned OldOpc);
 /// code.
 void emitARMRegPlusImmediate(MachineBasicBlock &MBB,
                              MachineBasicBlock::iterator &MBBI,
-                             const DebugLoc &dl, unsigned DestReg,
-                             unsigned BaseReg, int NumBytes,
-                             ARMCC::CondCodes Pred, unsigned PredReg,
+                             const DebugLoc &dl, Register DestReg,
+                             Register BaseReg, int NumBytes,
+                             ARMCC::CondCodes Pred, Register PredReg,
                              const ARMBaseInstrInfo &TII, unsigned MIFlags = 0);
 
 void emitT2RegPlusImmediate(MachineBasicBlock &MBB,
                             MachineBasicBlock::iterator &MBBI,
-                            const DebugLoc &dl, unsigned DestReg,
-                            unsigned BaseReg, int NumBytes,
-                            ARMCC::CondCodes Pred, unsigned PredReg,
+                            const DebugLoc &dl, Register DestReg,
+                            Register BaseReg, int NumBytes,
+                            ARMCC::CondCodes Pred, Register PredReg,
                             const ARMBaseInstrInfo &TII, unsigned MIFlags = 0);
 void emitThumbRegPlusImmediate(MachineBasicBlock &MBB,
                                MachineBasicBlock::iterator &MBBI,
-                               const DebugLoc &dl, unsigned DestReg,
-                               unsigned BaseReg, int NumBytes,
+                               const DebugLoc &dl, Register DestReg,
+                               Register BaseReg, int NumBytes,
                                const TargetInstrInfo &TII,
                                const ARMBaseRegisterInfo &MRI,
                                unsigned MIFlags = 0);
@@ -738,11 +748,11 @@ bool tryFoldSPUpdateIntoPushPop(const ARMSubtarget &Subtarget,
 /// offset could not be handled directly in MI, and return the left-over
 /// portion by reference.
 bool rewriteARMFrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
-                          unsigned FrameReg, int &Offset,
+                          Register FrameReg, int &Offset,
                           const ARMBaseInstrInfo &TII);
 
 bool rewriteT2FrameIndex(MachineInstr &MI, unsigned FrameRegIdx,
-                         unsigned FrameReg, int &Offset,
+                         Register FrameReg, int &Offset,
                          const ARMBaseInstrInfo &TII,
                          const TargetRegisterInfo *TRI);
 
@@ -757,7 +767,7 @@ MachineInstr *findCMPToFoldIntoCBZ(MachineInstr *Br,
                                    const TargetRegisterInfo *TRI);
 
 void addUnpredicatedMveVpredNOp(MachineInstrBuilder &MIB);
-void addUnpredicatedMveVpredROp(MachineInstrBuilder &MIB, unsigned DestReg);
+void addUnpredicatedMveVpredROp(MachineInstrBuilder &MIB, Register DestReg);
 
 void addPredicatedMveVpredNOp(MachineInstrBuilder &MIB, unsigned Cond);
 void addPredicatedMveVpredROp(MachineInstrBuilder &MIB, unsigned Cond,

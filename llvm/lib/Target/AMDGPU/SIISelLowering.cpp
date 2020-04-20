@@ -202,6 +202,11 @@ SITargetLowering::SITargetLowering(const TargetMachine &TM,
   setTruncStoreAction(MVT::v8i32, MVT::v8i8, Expand);
   setTruncStoreAction(MVT::v16i32, MVT::v16i8, Expand);
   setTruncStoreAction(MVT::v32i32, MVT::v32i8, Expand);
+  setTruncStoreAction(MVT::v2i16, MVT::v2i8, Expand);
+  setTruncStoreAction(MVT::v4i16, MVT::v4i8, Expand);
+  setTruncStoreAction(MVT::v8i16, MVT::v8i8, Expand);
+  setTruncStoreAction(MVT::v16i16, MVT::v16i8, Expand);
+  setTruncStoreAction(MVT::v32i16, MVT::v32i8, Expand);
 
   setOperationAction(ISD::GlobalAddress, MVT::i32, Custom);
   setOperationAction(ISD::GlobalAddress, MVT::i64, Custom);
@@ -2459,7 +2464,7 @@ void SITargetLowering::passSpecialInputs(
     SDValue Chain) const {
   // If we don't have a call site, this was a call inserted by
   // legalization. These can never use special inputs.
-  if (!CLI.CS)
+  if (!CLI.CB)
     return;
 
   SelectionDAG &DAG = CLI.DAG;
@@ -2470,7 +2475,7 @@ void SITargetLowering::passSpecialInputs(
 
   const AMDGPUFunctionArgInfo *CalleeArgInfo
     = &AMDGPUArgumentUsageInfo::FixedABIFunctionInfo;
-  if (const Function *CalleeFunc = CLI.CS.getCalledFunction()) {
+  if (const Function *CalleeFunc = CLI.CB->getCalledFunction()) {
     auto &ArgUsageInfo =
       DAG.getPass()->getAnalysis<AMDGPUArgumentUsageInfo>();
     CalleeArgInfo = &ArgUsageInfo.lookupFuncArgInfo(*CalleeFunc);
@@ -2721,10 +2726,11 @@ SDValue SITargetLowering::LowerCall(CallLoweringInfo &CLI,
                               "unsupported call to variadic function ");
   }
 
-  if (!CLI.CS.getInstruction())
+  if (!CLI.CB)
     report_fatal_error("unsupported libcall legalization");
 
-  if (!AMDGPUTargetMachine::EnableFixedFunctionABI && !CLI.CS.getCalledFunction()) {
+  if (!AMDGPUTargetMachine::EnableFixedFunctionABI &&
+      !CLI.CB->getCalledFunction()) {
     return lowerUnhandledCall(CLI, InVals,
                               "unsupported indirect call to function ");
   }
@@ -2744,7 +2750,7 @@ SDValue SITargetLowering::LowerCall(CallLoweringInfo &CLI,
   if (IsTailCall) {
     IsTailCall = isEligibleForTailCallOptimization(
       Callee, CallConv, IsVarArg, Outs, OutVals, Ins, DAG);
-    if (!IsTailCall && CLI.CS && CLI.CS.isMustTailCall()) {
+    if (!IsTailCall && CLI.CB && CLI.CB->isMustTailCall()) {
       report_fatal_error("failed to perform tail call elimination on a call "
                          "site marked musttail");
     }
@@ -3941,8 +3947,8 @@ bool SITargetLowering::isFMAFasterThanFMulAndFAdd(const MachineFunction &MF,
   return false;
 }
 
-bool SITargetLowering::isFMADLegalForFAddFSub(const SelectionDAG &DAG,
-                                              const SDNode *N) const {
+bool SITargetLowering::isFMADLegal(const SelectionDAG &DAG,
+                                   const SDNode *N) const {
   // TODO: Check future ftz flag
   // v_mad_f32/v_mac_f32 do not support denormals.
   EVT VT = N->getValueType(0);
@@ -11044,9 +11050,8 @@ bool SITargetLowering::requiresUniformRegister(MachineFunction &MF,
       // consider, so this assumes if any value is SGPR, the overall register
       // also needs to be SGPR.
       const SIRegisterInfo *SIRI = Subtarget->getRegisterInfo();
-      ImmutableCallSite CS(CI);
       TargetLowering::AsmOperandInfoVector TargetConstraints = ParseConstraints(
-          MF.getDataLayout(), Subtarget->getRegisterInfo(), CS);
+          MF.getDataLayout(), Subtarget->getRegisterInfo(), *CI);
       for (auto &TC : TargetConstraints) {
         if (TC.Type == InlineAsm::isOutput) {
           ComputeConstraintToUse(TC, SDValue());

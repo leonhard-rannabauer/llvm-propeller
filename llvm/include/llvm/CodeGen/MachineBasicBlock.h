@@ -70,13 +70,17 @@ struct MBBSectionID {
     return Type == Other.Type && Number == Other.Number;
   }
 
-  // This returns a unique index for the section in the range [0, max(Number)+2]
-  unsigned toIndex() {
-    return ((unsigned)MBBSectionID::SectionType::Cold) - ((unsigned)Type) +
-           Number;
-  }
+  bool operator!=(const MBBSectionID &Other) const { return !(*this == Other); }
 
-  static unsigned indexSize(unsigned NumBlockIDs) { return NumBlockIDs + 2; }
+  // This returns a unique index for the section in the range [0, max(Number)+2]
+  struct ToIndexFunctor {
+    using argument_type = MBBSectionID;
+    unsigned operator()(MBBSectionID SectionID) const {
+      return ((unsigned)MBBSectionID::SectionType::Cold) -
+             ((unsigned)SectionID.Type) + SectionID.Number;
+    }
+    static unsigned indexSize(unsigned NumBlockIDs) { return NumBlockIDs + 2; }
+  };
 
 private:
   // This is only used to construct the special cold and exception sections.
@@ -387,7 +391,7 @@ public:
   /// Add PhysReg as live in to this block, and ensure that there is a copy of
   /// PhysReg to a virtual register of class RC. Return the virtual register
   /// that is a copy of the live in PhysReg.
-  unsigned addLiveIn(MCRegister PhysReg, const TargetRegisterClass *RC);
+  Register addLiveIn(MCRegister PhysReg, const TargetRegisterClass *RC);
 
   /// Remove the specified register from the live in set.
   void removeLiveIn(MCPhysReg Reg,
@@ -522,9 +526,6 @@ public:
   bool sameSection(const MachineBasicBlock *MBB) const {
     return getSectionID() == MBB->getSectionID();
   }
-
-  /// Returns the basic block that ends the section which contains this one.
-  const MachineBasicBlock *getSectionEndMBB() const;
 
   /// Update the terminator instructions in block to account for changes to the
   /// layout. If the block previously used a fallthrough, it may now need a
@@ -890,7 +891,7 @@ public:
   ///
   /// \p Reg must be a physical register.
   LivenessQueryResult computeRegisterLiveness(const TargetRegisterInfo *TRI,
-                                              unsigned Reg,
+                                              MCRegister Reg,
                                               const_iterator Before,
                                               unsigned Neighborhood = 10) const;
 

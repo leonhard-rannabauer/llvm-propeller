@@ -1480,11 +1480,24 @@ static bool validThroughout(LexicalScopes &LScopes,
   if (LSRange.size() == 0)
     return false;
 
+  // If this range is neither open ended nor a constant, then it is not a
+  // candidate for being validThroughout.
+  if (RangeEnd && !DbgValue->getOperand(0).isImm())
+    return false;
+
   // Determine if the DBG_VALUE is valid at the beginning of its lexical block.
   const MachineInstr *LScopeBegin = LSRange.front().first;
   // Early exit if the lexical scope begins outside of the current block.
   if (LScopeBegin->getParent() != MBB)
     return false;
+
+  // If there are instructions belonging to our scope in another block, and
+  // we're not a constant (see DWARF2 comment below), then we can't be
+  // validThroughout.
+  const MachineInstr *LScopeEnd = LSRange.back().second;
+  if (RangeEnd && LScopeEnd->getParent() != MBB)
+    return false;
+
   MachineBasicBlock::const_reverse_iterator Pred(DbgValue);
   for (++Pred; Pred != MBB->rend(); ++Pred) {
     if (Pred->getFlag(MachineInstr::FrameSetup))
@@ -1504,11 +1517,6 @@ static bool validThroughout(LexicalScopes &LScopes,
   // If the range of the DBG_VALUE is open-ended, report success.
   if (!RangeEnd)
     return true;
-
-  // Fail if there are instructions belonging to our scope in another block.
-  const MachineInstr *LScopeEnd = LSRange.back().second;
-  if (LScopeEnd->getParent() != MBB)
-    return false;
 
   // Single, constant DBG_VALUEs in the prologue are promoted to be live
   // throughout the function. This is a hack, presumably for DWARF v2 and not
@@ -1581,8 +1589,7 @@ bool DwarfDebug::buildLocationList(SmallVectorImpl<DebugLocEntry> &DebugLoc,
     const MCSymbol *EndLabel;
     if (std::next(EI) == Entries.end()) {
       const MachineBasicBlock &EndMBB = Asm->MF->back();
-      EndLabel =
-          Asm->MBBSectionRanges[EndMBB.getSectionID().toIndex()].EndLabel;
+      EndLabel = Asm->MBBSectionRanges[EndMBB.getSectionID()].EndLabel;
       if (EI->isClobber())
         EndMI = EI->getInstr();
     }
@@ -2026,9 +2033,8 @@ void DwarfDebug::endFunctionImpl(const MachineFunction *MF) {
   if (MF->hasBBSections()) {
     for (auto &MBB : *MF) {
       if (&MBB != &MF->front() && MBB.isBeginSection())
-        TheCU.addRange(
-            {MBB.getSymbol(),
-             Asm->MBBSectionRanges[MBB.getSectionID().toIndex()].EndLabel});
+        TheCU.addRange({MBB.getSymbol(),
+                        Asm->MBBSectionRanges[MBB.getSectionID()].EndLabel});
     }
   }
 

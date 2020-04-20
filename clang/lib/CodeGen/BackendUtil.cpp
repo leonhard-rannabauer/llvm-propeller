@@ -77,6 +77,7 @@
 #include "llvm/Transforms/Utils/EntryExitInstrumenter.h"
 #include "llvm/Transforms/Utils/NameAnonGlobals.h"
 #include "llvm/Transforms/Utils/SymbolRewriter.h"
+#include "llvm/Transforms/Utils/UniqueInternalLinkageNames.h"
 #include <memory>
 using namespace clang;
 using namespace llvm;
@@ -222,6 +223,7 @@ getSancovOptsFromCGOpts(const CodeGenOptions &CGOpts) {
   Opts.TracePCGuard = CGOpts.SanitizeCoverageTracePCGuard;
   Opts.NoPrune = CGOpts.SanitizeCoverageNoPrune;
   Opts.Inline8bitCounters = CGOpts.SanitizeCoverageInline8bitCounters;
+  Opts.InlineBoolFlag = CGOpts.SanitizeCoverageInlineBoolFlag;
   Opts.PCTable = CGOpts.SanitizeCoveragePCTable;
   Opts.StackDepth = CGOpts.SanitizeCoverageStackDepth;
   return Opts;
@@ -233,7 +235,9 @@ static void addSanitizerCoveragePass(const PassManagerBuilder &Builder,
       static_cast<const PassManagerBuilderWrapper &>(Builder);
   const CodeGenOptions &CGOpts = BuilderWrapper.getCGOpts();
   auto Opts = getSancovOptsFromCGOpts(CGOpts);
-  PM.add(createModuleSanitizerCoverageLegacyPassPass(Opts));
+  PM.add(createModuleSanitizerCoverageLegacyPassPass(
+      Opts, CGOpts.SanitizeCoverageWhitelistFiles,
+      CGOpts.SanitizeCoverageBlacklistFiles));
 }
 
 // Check if ASan should use GC-friendly instrumentation for globals.
@@ -736,6 +740,12 @@ void EmitAssemblyHelper::CreatePasses(legacy::PassManager &MPM,
   if (!CodeGenOpts.RewriteMapFiles.empty())
     addSymbolRewriterPass(CodeGenOpts, &MPM);
 
+  // Add UniqueInternalLinkageNames Pass which renames internal linkage symbols
+  // with unique names.
+  if (CodeGenOpts.UniqueInternalLinkageNames) {
+    MPM.add(createUniqueInternalLinkageNamesPass());
+  }
+
   if (Optional<GCOVOptions> Options = getGCOVOptions(CodeGenOpts)) {
     MPM.add(createGCOVProfilerPass(*Options));
     if (CodeGenOpts.getDebugInfo() == codegenoptions::NoDebugInfo)
@@ -1217,6 +1227,12 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
       if (LangOpts.Sanitize.has(SanitizerKind::LocalBounds))
         MPM.addPass(createModuleToFunctionPassAdaptor(BoundsCheckingPass()));
 
+      // Add UniqueInternalLinkageNames Pass which renames internal linkage
+      // symbols with unique names.
+      if (CodeGenOpts.UniqueInternalLinkageNames) {
+        MPM.addPass(UniqueInternalLinkageNamesPass());
+      }
+
       // Lastly, add semantically necessary passes for LTO.
       if (IsLTO || IsThinLTO) {
         MPM.addPass(CanonicalizeAliasesPass());
@@ -1301,6 +1317,12 @@ void EmitAssemblyHelper::EmitAssemblyWithNewPassManager(
         PB.registerPipelineStartEPCallback([Options](ModulePassManager &MPM) {
           MPM.addPass(InstrProfiling(*Options, false));
         });
+
+      // Add UniqueInternalLinkageNames Pass which renames internal linkage
+      // symbols with unique names.
+      if (CodeGenOpts.UniqueInternalLinkageNames) {
+        MPM.addPass(UniqueInternalLinkageNamesPass());
+      }
 
       if (IsThinLTO) {
         MPM = PB.buildThinLTOPreLinkDefaultPipeline(

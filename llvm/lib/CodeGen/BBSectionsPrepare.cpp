@@ -351,8 +351,8 @@ static bool getClusterInfoFromFuncProfile(MachineFunction &MF, const llvm::Machi
     if (&MBB != Entry && RelativeFreq < 0.001) {
   	continue;    
     }
-    unsigned int idx = MBB.getNumber();
-    FuncBBClusterInfo[idx] = BBClusterInfo{idx, 0, CurrentPosition++};
+    unsigned int Idx = MBB.getNumber();
+    FuncBBClusterInfo[Idx] = BBClusterInfo{Idx, 0, CurrentPosition++};
   }
 
   return true;

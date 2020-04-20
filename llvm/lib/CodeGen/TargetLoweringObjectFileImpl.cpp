@@ -770,21 +770,24 @@ MCSection *TargetLoweringObjectFileELF::getSectionForMachineBasicBlock(
     const Function &F, const MachineBasicBlock &MBB,
     const TargetMachine &TM) const {
   assert(MBB.isBeginSection() && "Basic block does not start a section!");
+
   SmallString<128> Name;
   Name = (static_cast<MCSectionELF *>(MBB.getParent()->getSection()))
              ->getSectionName();
+
   unsigned UniqueID = MCContext::GenericSectionID;
 
   switch (MBB.getSectionID().Type) {
-    // Append suffixes to represent special cold and exception sections.
+  // Append suffixes to represent special exception sections.
   case MBBSectionID::SectionType::Exception:
     Name += ".eh";
     break;
+  // For cold sections use the .text.unlikely prefix.
   case MBBSectionID::SectionType::Cold: {
-    SmallString<128> temp;
-    temp += ".text.unlikely.";
-    temp += MBB.getParent()->getName();
-    Name.assign(temp);
+    SmallString<128> Temp;
+    Temp += ".text.unlikely.";
+    Temp += MBB.getParent()->getName();
+    Name.assign(Temp);
     break;
   }
   // For regular sections, either use a unique name, or a unique ID for the

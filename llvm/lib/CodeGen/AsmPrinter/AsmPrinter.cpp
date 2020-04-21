@@ -1098,9 +1098,30 @@ void AsmPrinter::emitFunctionBody() {
   bool HasAnyRealCode = false;
   int NumInstsInFunction = 0;
 
+  MBBSectionID currSectionID = MF->front().getSectionID();
+  CurrentSectionBeginSym = CurrentFnSym;
   for (auto &MBB : *MF) {
+    
+    if (!MF->hasBBLabels() && MBB.getSectionID() != currSectionID) {
+      SmallString<5> Suffix;
+      if(MBB.getSectionID() == MBBSectionID::ColdSectionID) {
+        Suffix += ".cold";
+      } else if(MBB.getSectionID() == MBBSectionID::ExceptionSectionID) {
+        Suffix += ".eh";
+      } else {
+        Suffix += "." + std::to_string(MBB.getSectionID().Number);  
+      }
+      OutStreamer->SwitchSection(
+          getObjFileLowering().getSectionForMachineBasicBlock(MF->getFunction(),
+                                                              MBB, TM));
+      CurrentSectionBeginSym = OutContext.getOrCreateSymbol(CurrentFnSym->getName() + Suffix);
+      OutStreamer->emitLabel(CurrentSectionBeginSym);
+      currSectionID = MBB.getSectionID();
+    }
+
     // Print a label for the basic block.
     emitBasicBlockStart(MBB);
+
     for (auto &MI : MBB) {
       // Print the assembly for the instruction.
       if (!MI.isPosition() && !MI.isImplicitDef() && !MI.isKill() &&
@@ -3071,13 +3092,6 @@ void AsmPrinter::emitBasicBlockStart(const MachineBasicBlock &MBB) {
   } else {
     if (isVerbose() && MBB.hasLabelMustBeEmitted()) {
       OutStreamer->AddComment("Label of block must be emitted");
-    }
-    // Switch to a new section if this basic block must begin a section.
-    if (MBB.isBeginSection()) {
-      OutStreamer->SwitchSection(
-          getObjFileLowering().getSectionForMachineBasicBlock(MF->getFunction(),
-                                                              MBB, TM));
-      CurrentSectionBeginSym = MBB.getSymbol();
     }
     OutStreamer->emitLabel(MBB.getSymbol());
     // With BB sections, each basic block must handle CFI information on its own

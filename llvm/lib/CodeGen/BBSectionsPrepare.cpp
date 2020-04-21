@@ -346,7 +346,7 @@ static bool getClusterInfoFromFuncProfile(MachineFunction &MF, const llvm::Machi
   FuncBBClusterInfo.resize(MF.getNumBlockIDs());
   for (MachineBasicBlock &MBB : MF) {
     double RelativeFreq = MBFI->getBlockFreq(&MBB).getFrequency()/Total;
-    if (&MBB != Entry && RelativeFreq < 0.001) {
+    if (&MBB != Entry && RelativeFreq < 0.0001) {
   	continue;    
     }
     unsigned int Idx = MBB.getNumber();

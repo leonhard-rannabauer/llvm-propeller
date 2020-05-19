@@ -999,7 +999,9 @@ static void readConfigs(opt::InputArgList &args) {
   // Parse Propeller flags.
   auto propellerOpts = args::getStrings(args, OPT_propeller_opt);
   for (auto &propellerOpt : propellerOpts) {
-    if (propellerOpt == "reorder-ip") {
+    if (propellerOpt == "no-reorder-ip") {
+      config->propellerReorderIP = false;
+    } else if (propellerOpt == "reorder-ip") {
       config->propellerReorderIP = true;
     } else if (propellerOpt == "reorder-funcs") {
       config->propellerReorderFuncs = true;

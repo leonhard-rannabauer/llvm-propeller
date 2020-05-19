@@ -67,6 +67,9 @@ void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
       coldCFGs.push_back(&cfg);
   });
 
+
+  if (propConfig.optReorderBlocksRandom)
+    clustering.reset(new NoOrdering());
   if (propConfig.optReorderIP || propConfig.optReorderFuncs)
     clustering.reset(new CallChainClustering());
   else {
@@ -74,6 +77,8 @@ void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
     // ordering of functions in both the hot and the cold layout.
     clustering.reset(new NoOrdering());
   }
+
+  std::srand(unsigned(std::time(0)));
 
   if (propConfig.optReorderIP) {
     // If -propeller-opt=reorder-ip we want to run basic block reordering on all
@@ -84,7 +89,6 @@ void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
     for (ControlFlowGraph *cfg : hotCFGs)
       NodeChainBuilder(cfg).doOrder(clustering);
   } else {
-    std::srand(unsigned(std::time(0)));
     // If reordering is not desired, we create changes according to the initial
     // order in the controlFlowGraph.
     for (ControlFlowGraph *cfg : hotCFGs) {
@@ -111,8 +115,16 @@ void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
         if (!coldNodes.empty())
           clustering->addChain(
               std::unique_ptr<NodeChain>(new NodeChain(coldNodes)));
-      } else
-        clustering->addChain(std::unique_ptr<NodeChain>(new NodeChain(cfg)));
+      } else {
+	// No split functions.
+        std::vector<CFGNode *> randomized_nodes;
+        cfg->forEachNodeRef([&randomized_nodes](CFGNode &n) {
+          randomized_nodes.emplace_back(&n);
+        });
+	std::random_shuffle(randomized_nodes.begin(), randomized_nodes.end());
+        clustering->addChain(std::unique_ptr<NodeChain>(
+            new NodeChain(randomized_nodes)));
+      }
     }
   }
 

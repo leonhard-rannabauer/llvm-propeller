@@ -651,7 +651,21 @@ void tools::gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
           CmdArgs.push_back(Args.MakeArgString(
               Twine("--lto-basicblock-sections=") + A->getValue()));
       }
-      CmdArgs.push_back("--optimize-bb-jumps");
+      bool do_not_add_optimize_bb_jumps = false;
+      for (auto *T : CmdArgs) {
+        StringRef SR(T);
+        if (SR.startswith("--optimize-bb-jumps") ||
+            SR.startswith("-optimize-bb-jumps") ||
+            SR.startswith("--no-optimize-bb-jumps") ||
+            SR.startswith("-no-optimize-bb-jumps") ||
+            SR.startswith("--nooptimize-bb-jumps") ||
+            SR.startswith("-nooptimize-bb-jumps")) {
+          do_not_add_optimize_bb_jumps = true;
+          break;
+        }
+      }
+      if (!do_not_add_optimize_bb_jumps)
+        CmdArgs.push_back("--optimize-bb-jumps");
       CmdArgs.push_back("--no-call-graph-profile-sort");
       CmdArgs.push_back("-z");
       CmdArgs.push_back("nokeep-text-section-prefix");

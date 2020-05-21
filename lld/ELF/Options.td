@@ -312,6 +312,11 @@ defm propeller_keep_named_symbols: B<"propeller-keep-named-symbols",
     "Delete unused basic block section symbols (default)">,
   Flags<[HelpHidden]>;
 
+defm propeller_check_target: B<"propeller-check-target",
+    "Check propeller optimizing target (default)",
+    "Do not check propeller optimizing target">,
+  Flags<[HelpHidden]>;
+
 defm propeller_print_stats: B<"propeller-print-stats",
     "Print propeller statistics.",
     "Do not print propeller statistics (default)">,

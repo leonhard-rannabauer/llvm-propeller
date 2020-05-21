@@ -965,6 +965,10 @@ static void readConfigs(opt::InputArgList &args) {
       args.hasFlag(OPT_propeller_keep_named_symbols,
                    OPT_no_propeller_keep_named_symbols, false);
 
+  config->propellerCheckTarget =
+      args.hasFlag(OPT_propeller_check_target,
+                   OPT_no_propeller_check_target, true);
+
   config->propellerClusterMergeSizeThreshold = args::getInteger(
       args, OPT_propeller_cluster_merge_size_threshold, 1 << 21);
 

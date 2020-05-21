@@ -280,7 +280,7 @@ public:
   ~Propeller();
 
   // Returns true if linker output target matches propeller profile.
-  bool checkTarget();
+  bool maybeCheckTarget();
   bool processFiles(std::vector<ObjectView *> &files);
   void processFile(ObjectView *view);
   CFGNode *findCfgNode(uint64_t symbolOrdinal);

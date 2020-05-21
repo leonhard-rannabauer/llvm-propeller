@@ -110,27 +110,30 @@ void CodeLayout::doSplitOrder(std::list<StringRef> &symbolList,
           std::random_shuffle(hotNodes.begin(), hotNodes.end());
         }
         if (!hotNodes.empty())
-          clustering->addChain(
-              std::unique_ptr<NodeChain>(new NodeChain(hotNodes)));
+          clustering->addChain(std::make_unique<NodeChain>(hotNodes));
         if (!coldNodes.empty())
-          clustering->addChain(
-              std::unique_ptr<NodeChain>(new NodeChain(coldNodes)));
+          clustering->addChain(std::make_unique<NodeChain>(coldNodes));
       } else {
 	// No split functions.
-        std::vector<CFGNode *> randomized_nodes;
-        cfg->forEachNodeRef([&randomized_nodes](CFGNode &n) {
-          randomized_nodes.emplace_back(&n);
-        });
-	std::random_shuffle(randomized_nodes.begin(), randomized_nodes.end());
-        clustering->addChain(std::unique_ptr<NodeChain>(
-            new NodeChain(randomized_nodes)));
+	if (propConfig.optReorderBlocksRandom) {
+	  std::vector<CFGNode *> randomized_nodes;
+	  cfg->forEachNodeRef([&randomized_nodes](CFGNode &n) {
+				randomized_nodes.emplace_back(&n);
+			      });
+          std::srand(unsigned(std::time(0)));
+	  std::random_shuffle(randomized_nodes.begin(), randomized_nodes.end());
+	  clustering->addChain(std::make_unique<NodeChain>(randomized_nodes));
+	} else {
+	  clustering->addChain(std::make_unique<NodeChain>(cfg));
+	}
       }
     }
+    warn("[Propeller]: generated randomized bb ordering for all hot functions.");
   }
 
   // The order for cold cfgs remains unchanged.
   for (ControlFlowGraph *cfg : coldCFGs)
-    clustering->addChain(std::unique_ptr<NodeChain>(new NodeChain(cfg)));
+    clustering->addChain(std::make_unique<NodeChain>(cfg));
 
   // After building all the chains, let the chain clustering algorithm perform
   // the final reordering and populate the hot and cold cfg node orders.

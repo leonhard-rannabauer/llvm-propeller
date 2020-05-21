@@ -69,6 +69,7 @@ static void setupConfig() {
   COPY_CONFIG(ForwardJumpDistance);
   COPY_CONFIG(ForwardJumpWeight);
   COPY_CONFIG(KeepNamedSymbols);
+  COPY_CONFIG(CheckTarget);
   COPY_CONFIG(Opts);
   COPY_CONFIG(PrintStats);
   COPY_CONFIG(ReorderBlocks);
@@ -94,7 +95,7 @@ void doPropeller() {
   setupConfig();
   prop = make<Propeller>();
 
-  if (!prop->checkTarget()) {
+  if (!prop->maybeCheckTarget()) {
     warn("[Propeller]: Propeller skipped '" + config->outputFile + "'.");
     return;
   }

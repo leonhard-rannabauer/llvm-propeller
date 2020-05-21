@@ -528,7 +528,7 @@ void Propeller::calculateNodeFreqs() {
 }
 
 // Returns true if linker output target matches propeller profile.
-bool Propeller::checkTarget() {
+bool Propeller::maybeCheckTarget() {
   if (propConfig.optPropeller.empty())
     return false;
   std::string propellerFileName = propConfig.optPropeller.str();
@@ -539,7 +539,7 @@ bool Propeller::checkTarget() {
     error(std::string("failed to open '") + propellerFileName + "'");
     return false;
   }
-  return propf->matchesOutputFileName(
+  return !propConfig.optCheckTarget || propf->matchesOutputFileName(
       llvm::sys::path::filename(propConfig.optLinkerOutputFile));
 }
 

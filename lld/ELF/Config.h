@@ -195,6 +195,7 @@ struct Configuration {
   bool pie;
   bool printGcSections;
   bool printIcfSections;
+  bool propellerCheckTarget;
   bool propellerKeepNamedSymbols;
   bool propellerPrintStats;
   bool propellerReorderIP = false;

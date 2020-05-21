@@ -1,4 +1,5 @@
 *
+!relink-bb-random.sh
 !generate-patches.sh
 !generate-patches.filelist
 !.gitignore

@@ -1121,7 +1121,7 @@ void AsmPrinter::emitFunctionBody() {
 
   bool ShouldPrintDebugScopes = MMI->hasDebugInfo();
 
-  if (isVerbose()) {
+  if (isVerbose() || true) {
     // Get MachineDominatorTree or compute it on the fly if it's unavailable
     MDT = getAnalysisIfAvailable<MachineDominatorTree>();
     if (!MDT) {
